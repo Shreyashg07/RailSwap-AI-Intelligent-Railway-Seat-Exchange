@@ -5,6 +5,8 @@ from backend.errors import ApiError
 from backend.extensions import db
 from backend.models import Booking
 from backend.security import owned_booking_or_404
+from backend.services.abuse_service import enforce_matching_rate_limit
+from backend.services.expiry_service import expire_stale_requests
 from backend.services.matching_service import (
     build_candidate_explanation,
     find_matches,
@@ -17,6 +19,8 @@ matching_bp = Blueprint("matching", __name__, url_prefix="/api/matching")
 @matching_bp.post("/search")
 @jwt_required()
 def search_matches():
+    enforce_matching_rate_limit(current_user)
+    expire_stale_requests()
     payload = json_body()
     booking_id = require_int(payload.get("booking_id"), "booking_id", 1)
     booking = owned_booking_or_404(booking_id, current_user.id)
@@ -45,6 +49,7 @@ def search_matches():
 @matching_bp.get("/<int:candidate_booking_id>/explanation")
 @jwt_required()
 def candidate_explanation(candidate_booking_id):
+    expire_stale_requests()
     booking_id_raw = request.args.get("booking_id")
     if booking_id_raw is None:
         raise ApiError(

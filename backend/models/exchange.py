@@ -1,4 +1,4 @@
-from backend.constants import EXCHANGE_PENDING
+from backend.constants import EXCHANGE_PENDING, PRIORITY_STANDARD
 from backend.extensions import db
 from backend.utils import isoformat, utcnow
 
@@ -18,6 +18,10 @@ class ExchangeRequest(db.Model):
         db.CheckConstraint(
             "compatibility_score >= 0 AND compatibility_score <= 100",
             name="ck_exchange_requests_score_range",
+        ),
+        db.CheckConstraint(
+            "priority_tier IN ('STANDARD', 'SENIOR_PRIORITY')",
+            name="ck_exchange_requests_priority_tier_valid",
         ),
         db.Index(
             "ix_exchange_requests_requester_status",
@@ -44,6 +48,10 @@ class ExchangeRequest(db.Model):
     )
     status = db.Column(db.String(40), nullable=False, default=EXCHANGE_PENDING)
     compatibility_score = db.Column(db.Float, nullable=False)
+    priority_tier = db.Column(
+        db.String(24), nullable=False, default=PRIORITY_STANDARD
+    )
+    expires_at = db.Column(db.DateTime, nullable=True, index=True)
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow, index=True)
     updated_at = db.Column(
         db.DateTime, nullable=False, default=utcnow, onupdate=utcnow
@@ -73,6 +81,8 @@ class ExchangeRequest(db.Model):
             "recipient_booking_id": self.recipient_booking_id,
             "status": self.status,
             "compatibility_score": self.compatibility_score,
+            "priority_tier": self.priority_tier,
+            "expires_at": isoformat(self.expires_at),
             "created_at": isoformat(self.created_at),
             "updated_at": isoformat(self.updated_at),
         }

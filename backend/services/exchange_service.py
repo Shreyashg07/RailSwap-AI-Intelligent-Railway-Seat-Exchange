@@ -1,3 +1,6 @@
+from datetime import timedelta
+
+from flask import current_app, has_app_context
 from sqlalchemy.exc import IntegrityError
 
 from backend.constants import (
@@ -16,16 +19,23 @@ from backend.constants import (
     EXCHANGE_DECLINED,
     EXCHANGE_EXPIRED,
     EXCHANGE_PENDING,
+    PRIORITY_SENIOR,
 )
 from backend.errors import ApiError
 from backend.extensions import db
 from backend.models import ExchangeEvent, ExchangeRequest
+from backend.services.abuse_service import (
+    enforce_exchange_creation,
+    enforce_repeat_decline_cooldown,
+)
+from backend.services.expiry_service import expire_stale_requests
 from backend.services.matching_service import (
     active_booking_ids,
     booking_has_active_exchange,
     evaluate_candidate,
 )
 from backend.services.notification_service import notify, notify_exchange_event
+from backend.services.priority_service import pair_priority
 from backend.services.scoring_service import candidate_features
 from backend.utils import isoformat, utcnow
 
@@ -51,6 +61,7 @@ def _booking_summary(booking):
             booking.preference.desired_berth_type if booking.preference else None
         ),
         "coach_scope": booking.preference.coach_scope if booking.preference else None,
+        "priority_status": booking.user.priority_public()["label"],
     }
 
 
@@ -83,6 +94,13 @@ def serialize_exchange(exchange, viewer_id):
         "id": exchange.id,
         "status": exchange.status,
         "compatibility_score": exchange.compatibility_score,
+        "priority_tier": exchange.priority_tier,
+        "priority_label": (
+            "Senior priority request"
+            if exchange.priority_tier == PRIORITY_SENIOR
+            else "Standard request"
+        ),
+        "expires_at": isoformat(exchange.expires_at),
         "direction": "OUTGOING" if is_requester else "INCOMING",
         "created_at": isoformat(exchange.created_at),
         "updated_at": isoformat(exchange.updated_at),
@@ -112,6 +130,7 @@ def serialize_exchange(exchange, viewer_id):
 
 
 def create_exchange(actor, requester_booking, recipient_booking):
+    expire_stale_requests()
     if requester_booking.user_id != actor.id:
         raise ApiError(
             "You can only create a request from your own booking.",
@@ -137,6 +156,11 @@ def create_exchange(actor, requester_booking, recipient_booking):
             "CANDIDATE_NOT_ELIGIBLE",
         )
 
+    enforce_exchange_creation(actor)
+    enforce_repeat_decline_cooldown(
+        requester_booking.id, recipient_booking.id
+    )
+
     existing = ExchangeRequest.query.filter(
         ExchangeRequest.status.in_(ACTIVE_EXCHANGE_STATUSES),
         db.or_(
@@ -146,6 +170,10 @@ def create_exchange(actor, requester_booking, recipient_booking):
             ExchangeRequest.recipient_booking_id.in_(
                 [requester_booking.id, recipient_booking.id]
             ),
+        ),
+        db.or_(
+            ExchangeRequest.expires_at.is_(None),
+            ExchangeRequest.expires_at > utcnow(),
         ),
     ).first()
     if existing:
@@ -171,14 +199,30 @@ def create_exchange(actor, requester_booking, recipient_booking):
             eligibility["reasons"],
         )
 
+    priority_context = pair_priority(
+        requester_booking, recipient_booking
+    )
     _features, score_details = candidate_features(
-        requester_booking, recipient_booking, eligibility
+        requester_booking,
+        recipient_booking,
+        eligibility,
+        priority_context=priority_context,
+    )
+    ttl_hours = (
+        int(current_app.config.get("PENDING_REQUEST_TTL_HOURS", 72))
+        if has_app_context()
+        else 72
+    )
+    expires_at = (
+        utcnow() + timedelta(hours=ttl_hours) if ttl_hours > 0 else None
     )
     exchange = ExchangeRequest(
         requester_booking_id=requester_booking.id,
         recipient_booking_id=recipient_booking.id,
         status=EXCHANGE_PENDING,
         compatibility_score=score_details["score"],
+        priority_tier=priority_context["tier"],
+        expires_at=expires_at,
     )
     db.session.add(exchange)
     try:
@@ -231,6 +275,7 @@ def accept_exchange(exchange, actor):
             {
                 ExchangeRequest.status: EXCHANGE_ACCEPTED_BY_BOTH,
                 ExchangeRequest.updated_at: utcnow(),
+                ExchangeRequest.expires_at: None,
             },
             synchronize_session=False,
         )

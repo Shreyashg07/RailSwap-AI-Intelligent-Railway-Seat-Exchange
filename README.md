@@ -11,7 +11,10 @@ RailSwap AI is a consent-first railway berth-exchange recommendation prototype. 
 - Transparent 0-100 ranking score with per-factor contributions and human-readable explanations.
 - Optional Random Forest confidence trained offline on synthetic compatibility labels.
 - Application-level consent workflow with guarded state transitions and audit events.
-- Privacy controls: display-name sharing preference, redacted administrator views, non-sensitive export.
+- Optional senior-citizen priority policy: self-declared, capped, applied only after eligibility, and never an ML feature.
+- Automatic expiry of stale pending requests so an unanswered request cannot block a booking forever.
+- Abuse protection: sign-in lockout, rate limits, repeat-decline cooldown, request caps, persisted fraud alerts, and administrator account restriction.
+- Privacy controls: display-name and priority sharing preferences, redacted administrator views, non-sensitive export.
 - Navy, ivory, and blue React interface with a public landing page, dashboards, train discovery, berth maps, matching, exchanges, notifications, ML lab, and admin console.
 - Reproducible backend and frontend tests.
 
@@ -142,8 +145,10 @@ All records are synthetic.
 3. Create an exchange request. The recipient receives an application notification; no railway reservation changes.
 4. Sign in as **Ananya**, open **Exchange Requests**, and accept or decline. Accepted means both application users agreed, not that a railway authority approved a change.
 5. Sign in as **admin@railswap.demo**. The administrator sees redacted exchange summaries only. Starting or completing the authorization step is explicitly a simulation.
-6. Optionally inspect **ML Lab** for actual synthetic-label metrics, feature importance, confusion matrices, and limitations.
-7. Try **Aarav**. Both of his seeded bookings are already part of active exchanges, so matching correctly excludes them. This demonstrates conflict protection rather than missing data.
+6. Review the **Fraud and abuse alerts** panel. The seeded synthetic alert can be resolved or used to restrict a demo account. Restriction revokes existing sessions and blocks sign-in until an administrator reactivates the account.
+7. Sign in as **Meera**. Her self-declared senior profile is active, but she keeps her priority status private. A reciprocal match shows the capped priority adjustment without publishing her label.
+8. Optionally inspect **ML Lab** for actual synthetic-label metrics, feature importance, confusion matrices, and limitations.
+9. Try **Aarav**. Both of his seeded bookings are already part of active exchanges, so matching correctly excludes them. This demonstrates conflict protection rather than missing data.
 
 See [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) for a fuller walkthrough.
 
@@ -171,7 +176,13 @@ score = 50 * reciprocal_match
       + 15 * berth_proximity
 ```
 
-Ties are broken by lower candidate booking ID. The score is a ranking heuristic, not a probability that a real passenger will accept.
+Eligible pairs then receive a configurable senior-priority policy adjustment (default `+3.0`, capped so the final value cannot exceed 100):
+
+```text
+final_score = min(100, base_score + senior_priority_adjustment)
+```
+
+The adjustment applies only after every hard rule passes, is visible in the score breakdown, and is not an ML feature. Ties are broken by lower candidate booking ID. The score is a ranking heuristic, not a probability that a real passenger will accept.
 
 The experimental model adds a synthetic-compatibility confidence value for information, but it cannot make an ineligible pair eligible and does not determine ranking.
 
@@ -186,7 +197,7 @@ AWAITING_EXTERNAL_AUTHORIZATION
   -> COMPLETED | CANCELLED
 ```
 
-`COMPLETED` is reachable only through the administrator's explicitly simulated authorization action. No external service is called.
+Pending requests also expire automatically after `PENDING_REQUEST_TTL_HOURS` (default 72). Expiry is evaluated lazily when exchange, matching, or dashboard data is read; expired requests remain in history and generate notifications and audit events. `COMPLETED` is reachable only through the administrator's explicitly simulated authorization action. No external service is called.
 
 ## Machine learning experiment
 
@@ -236,9 +247,9 @@ npm run build
 
 Latest verified results:
 
-- Backend: **30 passed** in 44.81 seconds.
-- Frontend: **5 passed** in 2.35 seconds total run; test execution 208 ms.
-- API smoke: **17/17 checks passed** across health, authentication, trains, journeys, bookings, dashboard, exchanges, notifications, ML metrics, export, admin views, and matching.
+- Backend: **39 passed** in 75.14 seconds, including priority-policy and abuse-protection coverage.
+- Frontend: **5 passed** in 3.04 seconds total run; test execution 321 ms.
+- API smoke: **17/17 checks passed** across health, authentication, trains, journeys, bookings, dashboard, exchanges, notifications, ML metrics, export, admin views, and matching. A follow-up live pass also verified senior priority, request expiry fields, fraud alerts, and account restriction.
 - Production build: successful. Vite reports an optional code-splitting warning for the main JavaScript chunk.
 
 See [`docs/TESTING_REPORT.md`](docs/TESTING_REPORT.md) for coverage and limitations.
@@ -259,6 +270,17 @@ Copy `.env.example` to `.env`. Never commit a real `.env`.
 | `ML_METRICS_PATH` | Optional metrics override | Saved evaluation JSON |
 | `MATCHING_RESULT_LIMIT` | Default match result count | `20` |
 | `MAX_ACTIVE_MATCHES` | Reserved configuration value | `5` |
+| `SENIOR_CITIZEN_AGE` | Self-declared priority age threshold | `60` |
+| `SENIOR_PRIORITY_BONUS` | Capped priority ranking adjustment | `3.0` |
+| `PENDING_REQUEST_TTL_HOURS` | Automatic pending-request expiry window | `72` |
+| `RATE_LIMIT_ENABLED` | Enable in-memory abuse rate limits | `true` |
+| `LOGIN_MAX_ATTEMPTS` | Failed sign-ins before temporary lockout | `5` |
+| `REGISTER_MAX_PER_HOUR` | Demo registrations per network per hour | `5` |
+| `MAX_ACTIVE_EXCHANGE_REQUESTS_PER_USER` | Concurrent active requests per passenger | `3` |
+| `DECLINED_REQUEST_COOLDOWN_HOURS` | Repeat-request cooldown after a decline | `24` |
+| `MAX_BOOKINGS_PER_USER` | Synthetic bookings per demo account | `8` |
+
+See `backend/config.py` for the complete rate-limit, request-cap, and password-change settings.
 
 The frontend uses `/api` through Vite's proxy. To point directly at another API, set `VITE_API_BASE_URL` in `frontend/frontend/.env.local`.
 
@@ -268,10 +290,11 @@ The frontend uses `/api` through Vite's proxy. To point directly at another API,
 backend/
   app.py, __init__.py       Application entry point and factory
   config.py                 Environment-driven configuration
-  constants.py              Domain statuses, transitions, weights
-  models/                   SQLAlchemy entities and constraints
+  constants.py              Domain statuses, transitions, weights, policy values
+  schema_sync.py            Local SQLite compatibility-column upgrader
+  models/                   SQLAlchemy entities, constraints, and security records
   routes/                   JSON API blueprints
-  services/                 Matching, scoring, exchange, ML, notifications
+  services/                 Matching, scoring, exchange, priority, expiry, abuse, ML
   tests/                    Backend pytest suite
   ml/                       Dataset generation, training, evaluation, artifacts
   seed.py                   Idempotent synthetic demo seeder
@@ -298,8 +321,11 @@ docs/
 - Use HTTPS and secure secret management outside local demonstration.
 - Local JWT storage uses `localStorage`; production applications should evaluate HttpOnly cookie strategies, CSRF protection, token revocation, and refresh-token rotation.
 - The API uses SQLite and is not intended for concurrent production load without a production database and migration/deployment plan.
-- Administrator views intentionally redact passenger identity and booking references.
-- Passengers can opt out of display-name sharing; candidate APIs use a generic public identity when disabled.
+- Administrator views intentionally redact passenger display names, identity, and booking references.
+- Passengers can opt out of display-name sharing and priority-status sharing; candidate APIs use a generic public identity or a private label when disabled.
+- Senior-citizen priority is a self-declared demonstration policy, not verified eligibility or official railway priority.
+- Sign-in attempts are stored with hashed email identifiers. The short-window rate limiter is in-memory and single-process; a production deployment should use a shared store such as Redis.
+- Restricted accounts lose authenticated API access, and existing JWTs stop working immediately.
 - No external railway, identity, payment, or authorization service is integrated.
 
 ## Documentation

@@ -1,6 +1,6 @@
 # RailSwap AI Testing Report
 
-Date of latest verification: 28 October 2026
+Date of latest verification: 22 November 2026
 
 ## 1. Purpose
 
@@ -65,17 +65,18 @@ This prevents the development database or real artifacts from making tests pass 
 
 | Suite | Result | Duration | Warnings |
 |---|---|---|---|
-| Backend pytest | **30 passed, 0 failed** | 44.81 s | None |
-| Frontend Vitest | **5 passed, 0 failed** | 208 ms test execution; 2.35 s total | None |
+| Backend pytest | **39 passed, 0 failed** | 75.14 s | None |
+| Frontend Vitest | **5 passed, 0 failed** | 321 ms test execution; 3.04 s total | None |
 | API smoke | **17/17 checks passed** | Test-client run | None |
-| Production build | **Succeeded** | 7.08 s | Main JS chunk > 500 kB |
+| Live follow-up smoke | **Passed** | Manual API run | None |
+| Production build | **Succeeded** | 9.91 s | Main JS chunk > 500 kB |
 | ML artifact load | Passed | Included in backend suite | None |
 
 No skipped tests were reported in the latest backend run because the trained model artifact was present and loadable.
 
 ## 6. Backend coverage
 
-The backend suite contains 30 tests in five modules.
+The backend suite contains 39 tests in seven modules.
 
 ### 6.1 Authentication: 7 tests
 
@@ -123,7 +124,7 @@ The deterministic ranking test checks that equal scores use lower candidate book
 File: `backend/tests/test_exchanges.py`
 
 - Create and accept a request without claiming an official railway change.
-- Decline a request and create a new request after a terminal state.
+- Decline a request and enforce the repeat-request cooldown.
 - Reject self-exchange and duplicate active requests.
 - Restrict accept/decline to the intended recipient.
 - Allow either participant to cancel.
@@ -140,6 +141,25 @@ File: `backend/tests/test_ml.py`
 - Missing model artifacts produce a safe `rule_based_fallback`.
 - The trained artifact loads, uses the expected feature schema, and returns a valid probability.
 - The service does not train during an inference request.
+
+### 6.6 Senior-citizen priority: 3 tests
+
+File: `backend/tests/test_priority.py`
+
+- The priority adjustment applies only after hard eligibility passes and is capped at 100.
+- Opting out disables the adjustment.
+- A candidate who keeps priority status private is not exposed through labels or policy metadata.
+
+### 6.7 Security and abuse protection: 6 tests
+
+File: `backend/tests/test_security.py`
+
+- Repeated failed sign-ins lock the account and create a redacted administrator alert.
+- A successful sign-in resets the failed-attempt counter.
+- An administrator can restrict an account, and restricted sign-in returns `403 ACCOUNT_RESTRICTED`.
+- Restricting an account revokes an existing JWT session immediately.
+- Registration rate limiting returns `429 REGISTRATION_RATE_LIMITED`.
+- A stale pending request is marked `EXPIRED` and remains in history.
 
 ## 7. Frontend coverage
 
@@ -179,6 +199,8 @@ A test-client smoke pass used the populated synthetic database and exercised 17 
 
 Result: **17/17 passed**.
 
+A follow-up live API pass after the priority and security changes exercised health, passenger and administrator sign-in, profile, bookings, matching with priority metadata, exchange creation and cancellation, expiry fields, dashboard priority metadata, admin overview, fraud alerts, and account restriction. All follow-up checks passed.
+
 Observed smoke details:
 
 - Export response was valid JSON and downloadable (`1028` bytes for the seeded state).
@@ -202,11 +224,11 @@ Result:
 | Artifact | Size | Gzip |
 |---|---:|---:|
 | `dist/index.html` | 0.62 kB | 0.38 kB |
-| `dist/assets/index-*.css` | 112.24 kB | 21.51 kB |
-| `dist/assets/index-*.js` | 721.40 kB | 202.21 kB |
+| `dist/assets/index-*.css` | 114.08 kB | 21.83 kB |
+| `dist/assets/index-*.js` | 734.02 kB | 204.96 kB |
 
 - 2,242 modules transformed.
-- Build completed in 7.08 s.
+- Build completed in 9.91 s.
 - Vite emitted a non-fatal warning that the main JS chunk exceeds 500 kB.
 - No compilation or route-resolution errors occurred.
 
@@ -247,6 +269,11 @@ Interpretation: because labels are derived from the same documented hard-rule po
 | Workflow transitions reject invalid states | Pass |
 | Only administrators can advance simulated authorization | Pass |
 | Admin responses redact passenger data | Pass |
+| Senior priority applies only after eligibility and is capped | Pass |
+| Repeated failed sign-ins lock the account and reset after success | Pass |
+| Restricted accounts lose existing and new authenticated access | Pass |
+| Stale pending requests expire and release their bookings | Pass |
+| Admin fraud alerts do not expose passenger identity | Pass |
 | Missing ML artifacts do not break matching | Pass |
 | The persisted model can be loaded without request-time training | Pass |
 | Backend tests pass cleanly | Pass |
@@ -260,6 +287,8 @@ Interpretation: because labels are derived from the same documented hard-rule po
 - No automated screenshot, visual-regression, or full accessibility audit has been run.
 - Responsive behavior is implemented and compiles, but should be manually checked in target browsers before presentation.
 - SQLite concurrency and multi-process load behavior have not been tested.
+- The rate limiter is in-memory and single-process; it is not shared across workers.
+- Pending-request expiry is evaluated lazily on relevant API reads rather than by a scheduled background job.
 - No performance or soak test exists for large datasets.
 - No live railway, identity, payment, or authorization integration exists by design.
 - JWT storage in `localStorage` is a demonstration choice, not a production security recommendation.

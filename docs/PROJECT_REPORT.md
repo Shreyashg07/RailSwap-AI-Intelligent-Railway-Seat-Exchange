@@ -43,7 +43,7 @@ Railway passengers often have strong preferences about berth position and coach 
 
 This project presents RailSwap AI, a full-stack demonstration of consent-first reciprocal berth-exchange recommendation. The backend is implemented with Flask, SQLAlchemy, SQLite, and JWT authentication. The frontend is a responsive React single-page application. A candidate is eligible only after deterministic checks covering journey identity, upcoming status, booking and berth validity, simulated verification, mutual berth preference, coach scope, self-exchange prevention, and active-request conflicts. Eligible pairs receive a transparent 0-100 weighted ranking score and a human-readable explanation. The application then supports a guarded exchange state machine, notifications, participant-scoped views, privacy controls, redacted administrator views, and a non-sensitive export.
 
-An auxiliary Random Forest experiment is included to demonstrate a reproducible offline ML pipeline. The synthetic dataset contains 4,320 pairs, split by scenario group into 3,240 training rows and 1,080 test rows. Because labels are derived from the documented eligibility rules, both the model and the rule baseline achieve perfect classification metrics; this is explicitly interpreted as implementation consistency, not predictive validity. Precision@5 is 0.8289 for the model and 0.7267 for the baseline. The model is never used to override eligibility and is never trained during an API request. The final implementation passes 30 backend tests, 5 frontend tests, a 17-check API smoke pass, and a production frontend build.
+An auxiliary Random Forest experiment is included to demonstrate a reproducible offline ML pipeline. The synthetic dataset contains 4,320 pairs, split by scenario group into 3,240 training rows and 1,080 test rows. Because labels are derived from the documented eligibility rules, both the model and the rule baseline achieve perfect classification metrics; this is explicitly interpreted as implementation consistency, not predictive validity. Precision@5 is 0.8289 for the model and 0.7267 for the baseline. The model is never used to override eligibility and is never trained during an API request. The final implementation adds an optional senior-citizen priority policy and abuse-protection controls, and passes 39 backend tests, 5 frontend tests, a 17-check API smoke pass, a live follow-up smoke pass, and a production frontend build.
 
 **Keywords:** berth exchange, reciprocal recommendation, consent, explainable ranking, Flask, React, JWT, Random Forest, synthetic data
 
@@ -172,7 +172,7 @@ This separation is a central design decision. It prevents a high score from comp
 
 JSON Web Tokens provide a compact bearer-token format for API authentication. The backend uses Flask-JWT-Extended to create short-lived access tokens and load the current user from the token subject. The API validates token presence, format, expiry, and user existence. Object-level authorization is then applied to bookings, preferences, notifications, and exchanges. Role checks are applied to administrator endpoints.
 
-JWT authentication does not solve every security problem. This demonstration stores the token in browser `localStorage` for simplicity. A production design would need to consider HttpOnly cookies, CSRF, token revocation, refresh rotation, secure secret management, HTTPS, rate limiting, and account recovery.
+JWT authentication does not solve every security problem. This demonstration stores the token in browser `localStorage` for simplicity. A production design would need to consider HttpOnly cookies, CSRF, token revocation, refresh rotation, secure secret management, HTTPS, a shared rate-limit store, and account recovery.
 
 ### 2.3 Relational data and constraints
 
@@ -408,15 +408,22 @@ The API uses nouns, HTTP methods, consistent JSON errors, and status-specific er
 | Unsafe ML failure | Fallback to deterministic matching |
 | Oversized request body | 1 MiB application limit |
 | CORS abuse | Configured allowed origins |
+| Brute-force sign-in | Persisted failed-attempt tracking, temporary email lockout, and administrator fraud alerts |
+| Request flooding | Short-window in-memory limits for registration, matching, exchange creation, and exchange actions |
+| Repeat declines | Pair-level cooldown after a declined request |
+| Confirmed abuse | Administrator account restriction revokes existing JWTs and blocks sign-in |
+| Stale pending requests | Configurable TTL with lazy expiry on relevant API reads |
 
-The demonstration does not include rate limiting, MFA, email verification, token revocation, or production secret management.
+The rate limiter is in-memory and single-process for the demonstration. MFA, email verification, a shared rate-limit store, and production secret management are not included.
 
 ### 4.7 Privacy design
 
 - Candidate names use `public_identity()`.
 - A passenger can hide the display name.
+- A passenger can hide senior-priority status; the candidate then sees a private label.
 - Booking references appear only in the owner's booking payloads.
-- The administrator sees aggregate counts and redacted exchange summaries.
+- The administrator sees aggregate counts, redacted exchange summaries, and fraud alerts identified only by `Demo user #id`.
+- Sign-in attempts store hashed email identifiers rather than raw emails.
 - The export excludes identity and ticket data.
 - The UI consistently states that no railway system is modified.
 
@@ -492,16 +499,25 @@ score = 100 * (
 
 The result is rounded to two decimals and displayed on a 0-100 ranking scale. Weights are illustrative configuration values, not learned or validated probabilities.
 
+Eligible pairs then receive an optional, configurable senior-priority adjustment (default `+3.0`):
+
+```text
+final_score = min(100, base_score + senior_priority_adjustment)
+```
+
+The adjustment is applied only after every hard rule passes, is shown as a separate score contribution, and is not an ML feature. It is a self-declared demonstration policy, not official railway priority.
+
 The score is intentionally **not** described as a probability. A score of 96.88 does not mean a 96.88% chance of passenger acceptance.
 
 ### 5.4 Ranking
 
 Eligible candidates are sorted by:
 
-1. weighted score, descending;
-2. candidate booking ID, ascending.
+1. final score, descending;
+2. senior-priority pair, first when scores tie;
+3. candidate booking ID, ascending.
 
-The second key ensures deterministic output when scores tie. This behavior is covered by tests.
+The remaining keys ensure deterministic output when scores tie. This behavior is covered by tests.
 
 ### 5.5 Explanation
 
@@ -538,6 +554,8 @@ stateDiagram-v2
 
 The state update uses a conditional `UPDATE ... WHERE status = current_status`; if zero rows change, a conflict is returned. This reduces lost-update behavior compared with an unchecked read-modify-write.
 
+Pending requests also expire automatically after the configured TTL (default 72 hours). Expiry is evaluated lazily when exchange, matching, or dashboard data is read, and expired requests remain in history with audit events and notifications.
+
 ### 5.7 Consent semantics
 
 The workflow deliberately distinguishes:
@@ -549,7 +567,7 @@ Only an explicit administrator simulation can move an accepted request to `AWAIT
 
 ### 5.8 Why overlap prevention matters
 
-Without conflict prevention, one booking could promise its berth to multiple people. A single active-exchange rule ensures that a booking cannot be involved in more than one active workflow. Declined, cancelled, completed, and expired states are terminal and release the booking from the active set. Tests verify that a new request can be created after a terminal state when the pair is otherwise eligible.
+Without conflict prevention, one booking could promise its berth to multiple people. A single active-exchange rule ensures that a booking cannot be involved in more than one active workflow. Declined, cancelled, completed, and expired states are terminal and release the booking from the active set. A declined pairing is subject to a configurable repeat-request cooldown, and tests verify that the cooldown creates an administrator alert rather than allowing an immediate retry.
 
 ---
 
@@ -689,14 +707,15 @@ backend/
   __init__.py             App factory and JWT callbacks
   app.py                  Local entry point
   config.py               Environment and paths
-  constants.py            Statuses, roles, weights, transitions
+  constants.py            Statuses, roles, weights, transitions, policy values
+  schema_sync.py          Local SQLite compatibility-column upgrader
   errors.py               API error envelope
   security.py             Ownership and admin guards
   validation.py           Request validation
   seed.py                 Idempotent synthetic dataset
-  models/                 ORM entities
+  models/                 ORM entities and security records
   routes/                 JSON API blueprints
-  services/               Business logic
+  services/               Matching, scoring, exchange, priority, expiry, abuse, ML
   tests/                  Pytest suite
   ml/                     Generator, training, evaluation, artifacts
 frontend/
@@ -832,8 +851,8 @@ Latest command:
 Output:
 
 ```text
-..............................                                           [100%]
-30 passed in 44.81s
+.......................................                                  [100%]
+39 passed in 75.14s
 ```
 
 Coverage areas:
@@ -842,7 +861,9 @@ Coverage areas:
 - 6 authorization/ownership tests;
 - 6 reciprocal matching tests;
 - 7 exchange workflow tests;
-- 4 ML/fallback tests.
+- 4 ML/fallback tests;
+- 3 senior-priority tests;
+- 6 security and abuse-protection tests.
 
 No tests failed and no warnings were reported in the latest run. The trained model was available, so artifact-load tests ran rather than skipping.
 
@@ -888,15 +909,17 @@ A 17-check test-client smoke pass succeeded against the seeded database:
 
 The reciprocal smoke result was one eligible candidate with a deterministic score of 96.88 and ML confidence 0.9278. Aarav's seeded active exchanges correctly prevented matching for his bookings.
 
+A live follow-up pass after the priority and security changes verified health, passenger and administrator sign-in, profile, bookings, matching with priority metadata, exchange creation and cancellation, expiry fields, dashboard priority metadata, admin overview, fraud alerts, and account restriction. All follow-up checks passed.
+
 ### 8.5 Build results
 
 ```text
 Vite 6.4.5
 2,242 modules transformed
 dist/index.html                 0.62 kB
-dist/assets/index-*.css        112.24 kB
-dist/assets/index-*.js        721.40 kB
-Built in 7.08s
+dist/assets/index-*.css        114.08 kB
+dist/assets/index-*.js        734.02 kB
+Built in 9.91s
 ```
 
 Vite reported a non-fatal chunk-size warning because the main JS bundle exceeds 500 kB. The build otherwise succeeded.
@@ -912,7 +935,11 @@ Vite reported a non-fatal chunk-size warning because the main JS bundle exceeds 
 | Deterministic ranking | Matching tests | Pass |
 | Active-exchange exclusion | Matching and exchange tests | Pass |
 | Workflow transitions | Exchange tests | Pass |
-| Privacy/redaction | Matching, permission, export tests | Pass |
+| Privacy/redaction | Matching, permission, export, security tests | Pass |
+| Senior priority after eligibility | Priority tests | Pass |
+| Login lockout and reset | Security tests | Pass |
+| Account restriction revokes sessions | Security tests | Pass |
+| Automatic pending expiry | Security test | Pass |
 | ML fallback | ML tests | Pass |
 | No request-time training | ML test | Pass |
 | UI build | Vite build | Pass |
@@ -947,10 +974,11 @@ Vite reported a non-fatal chunk-size warning because the main JS bundle exceeds 
 
 - SQLite is not intended for high-concurrency production use.
 - Token storage in `localStorage` is a local demonstration choice.
-- There is no refresh token, revocation list, MFA, or email verification.
-- There is no rate limiting, abuse detection, or audit export for administrators.
+- There is no refresh token, token revocation list, MFA, or email verification.
+- Rate limits are in-memory and single-process; a production deployment needs a shared store such as Redis.
+- Fraud alerts are reviewable in the console, but there is no bulk audit export.
 - No pagination is implemented for larger datasets.
-- No background job handles expiration automatically; expiry is an explicit administrative transition.
+- Pending-request expiry is evaluated lazily on API reads; no scheduled background job performs expiry.
 - No real payment, inventory, or operator integration exists.
 - The frontend bundle is not code-split.
 - The tests are strong at API behavior but do not include browser-level integration.
@@ -1015,8 +1043,8 @@ Future work:
 
 1. Add browser end-to-end, visual regression, and accessibility tests.
 2. Split the frontend bundle and lazy-load analytics/admin routes.
-3. Introduce refresh tokens, revocation, rate limiting, MFA, and email verification.
-4. Add background expiration and configurable time windows.
+3. Introduce refresh tokens, revocation, a shared rate-limit store, MFA, and email verification.
+4. Add scheduled background expiry and richer configurable time windows.
 5. Support richer preferences such as coach position or companion adjacency.
 6. Explore multi-party exchanges with fairness constraints.
 7. Add production database migration and deployment pipelines.
@@ -1124,5 +1152,8 @@ npm --prefix frontend/frontend run build
 | GET | `/api/admin/overview` | Admin |
 | GET | `/api/admin/exchanges` | Admin |
 | POST | `/api/admin/exchanges/{id}/advance` | Admin |
+| GET | `/api/admin/fraud-alerts` | Admin |
+| POST | `/api/admin/fraud-alerts/{id}/resolve` | Admin |
+| POST | `/api/admin/users/{id}/status` | Admin |
 
 The complete request/response contract is in `docs/API_DOCUMENTATION.md`.

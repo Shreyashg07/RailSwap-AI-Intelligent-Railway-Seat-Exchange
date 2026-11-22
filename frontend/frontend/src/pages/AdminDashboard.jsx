@@ -6,7 +6,9 @@ import {
   Database,
   FlaskConical,
   RefreshCcw,
+  ShieldAlert,
   ShieldCheck,
+  Sparkles,
   Ticket,
   TrainFront,
   UsersRound,
@@ -49,23 +51,27 @@ const NEXT_ACTIONS = {
 export default function AdminDashboard() {
   const [overview, setOverview] = useState(null);
   const [exchanges, setExchanges] = useState([]);
+  const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
   const [flash, setFlash] = useState("");
   const [actionId, setActionId] = useState(null);
+  const [alertActionId, setAlertActionId] = useState(null);
   const [statusFilter, setStatusFilter] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [overviewPayload, exchangePayload] = await Promise.all([
+      const [overviewPayload, exchangePayload, alertPayload] = await Promise.all([
         adminApi.overview(),
         adminApi.exchanges({ limit: 100 }),
+        adminApi.fraudAlerts({ limit: 100 }),
       ]);
       setOverview(overviewPayload);
       setExchanges(exchangePayload.items || []);
+      setAlerts(alertPayload.items || []);
     } catch (err) {
       setError(err.message || "Administrator data could not be loaded.");
     } finally {
@@ -115,12 +121,51 @@ export default function AdminDashboard() {
     }
   }
 
+  async function resolveAlert(alert, resolution, restrictUser = false) {
+    const confirmed = window.confirm(
+      restrictUser
+        ? `Resolve alert #${alert.id} and restrict this demo account? Existing sessions will stop working and sign-in will be blocked until an administrator reactivates the account.`
+        : `Mark alert #${alert.id} as ${resolution.toLowerCase()}? No account restriction will be applied.`
+    );
+    if (!confirmed) return;
+    setActionError("");
+    setFlash("");
+    setAlertActionId(alert.id);
+    try {
+      const payload = await adminApi.resolveFraudAlert(alert.id, {
+        resolution,
+        restrict_user: restrictUser,
+        note: restrictUser
+          ? "Administrator restricted the account after review."
+          : "Administrator reviewed the synthetic demo signal.",
+      });
+      setAlerts((current) =>
+        current.map((item) =>
+          item.id === alert.id ? payload.alert : item
+        )
+      );
+      const refreshed = await adminApi.overview();
+      setOverview(refreshed);
+      setFlash(
+        restrictUser
+          ? `Alert #${alert.id} resolved and the demo account was restricted.`
+          : `Alert #${alert.id} marked ${resolution.toLowerCase()}.`
+      );
+    } catch (err) {
+      setActionError(err.message || "The fraud alert could not be updated.");
+    } finally {
+      setAlertActionId(null);
+    }
+  }
+
   if (loading) return <LoadingState full label="Loading administrator console..." />;
   if (error) return <ErrorState message={error} onRetry={load} />;
 
   const counts = overview?.counts || {};
   const statusCounts = overview?.exchange_status_counts || {};
+  const security = overview?.security || {};
   const ml = overview?.ml;
+  const openAlerts = alerts.filter((alert) => alert.status === "OPEN");
 
   return (
     <div className="page-stack">
@@ -181,6 +226,20 @@ export default function AdminDashboard() {
           value={counts.active_exchanges ?? 0}
           hint={`${counts.exchange_requests ?? 0} requests in total`}
           tone="warning"
+        />
+        <StatCard
+          icon={ShieldAlert}
+          label="Open fraud alerts"
+          value={security.open_fraud_alerts ?? openAlerts.length}
+          hint={`${security.failed_logins_24h ?? 0} failed sign-ins in 24h`}
+          tone="violet"
+        />
+        <StatCard
+          icon={Sparkles}
+          label="Priority requests"
+          value={counts.senior_priority_requests ?? 0}
+          hint="Self-declared senior policy"
+          tone="teal"
         />
       </section>
 
@@ -270,6 +329,146 @@ export default function AdminDashboard() {
         </section>
       </div>
 
+      <section className="panel security-panel">
+        <div className="panel-heading">
+          <div>
+            <span className="section-kicker">
+              <ShieldAlert size={14} aria-hidden="true" />
+              Misuse protection
+            </span>
+            <h2>Fraud and abuse alerts</h2>
+          </div>
+          <span
+            className={`badge ${
+              openAlerts.length > 0 ? "badge-warning" : "badge-success"
+            }`}
+          >
+            {openAlerts.length} open
+          </span>
+        </div>
+
+        <div className="security-summary">
+          <div>
+            <span>Failed sign-ins / 24h</span>
+            <strong>{security.failed_logins_24h ?? 0}</strong>
+          </div>
+          <div>
+            <span>Successful sign-ins / 24h</span>
+            <strong>{security.successful_logins_24h ?? 0}</strong>
+          </div>
+          <div>
+            <span>Restricted accounts</span>
+            <strong>{security.restricted_users ?? 0}</strong>
+          </div>
+          <div>
+            <span>Limiter store</span>
+            <strong>
+              {security.rate_limit_store === "in_memory_single_process"
+                ? "In-memory demo"
+                : "Configured"}
+            </strong>
+          </div>
+        </div>
+
+        {alerts.length === 0 ? (
+          <div className="empty-state compact-empty">
+            <strong>No security alerts yet.</strong>
+            <p>
+              Repeated failed sign-ins, request floods, and repeat-decline
+              retries create reviewable alerts.
+            </p>
+          </div>
+        ) : (
+          <div className="admin-table-wrap">
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>Alert</th>
+                  <th>Account</th>
+                  <th>Severity</th>
+                  <th>Status</th>
+                  <th>Created</th>
+                  <th>Review</th>
+                </tr>
+              </thead>
+              <tbody>
+                {alerts.map((alert) => (
+                  <tr key={alert.id}>
+                    <td>
+                      <strong>{alert.alert_type}</strong>
+                      <small>{alert.summary}</small>
+                    </td>
+                    <td>
+                      {alert.user ? (
+                        <>
+                          <strong>{alert.user.reference}</strong>
+                          <small>{alert.user.account_status}</small>
+                        </>
+                      ) : (
+                        <span className="muted small">Unknown account</span>
+                      )}
+                    </td>
+                    <td>
+                      <span
+                        className={`badge ${
+                          alert.severity === "HIGH"
+                            ? "badge-danger"
+                            : alert.severity === "MEDIUM"
+                              ? "badge-warning"
+                              : "badge-soft"
+                        }`}
+                      >
+                        {alert.severity}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="badge badge-soft">{alert.status}</span>
+                    </td>
+                    <td>
+                      <small>{formatDateTime(alert.created_at)}</small>
+                    </td>
+                    <td>
+                      {alert.status === "OPEN" ? (
+                        <div className="alert-actions">
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-small"
+                            onClick={() => resolveAlert(alert, "RESOLVED")}
+                            disabled={alertActionId === alert.id}
+                          >
+                            <CheckCircle2 size={14} />
+                            Resolve
+                          </button>
+                          {alert.user && (
+                            <button
+                              type="button"
+                              className="btn btn-danger-ghost btn-small"
+                              onClick={() =>
+                                resolveAlert(alert, "RESOLVED", true)
+                              }
+                              disabled={alertActionId === alert.id}
+                            >
+                              <ShieldAlert size={14} />
+                              Restrict
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="muted small">Reviewed</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="panel-note">
+          {security.note ||
+            "Alerts use hashed sign-in identifiers and never expose display names, raw emails, IP addresses, or ticket data."}
+        </p>
+      </section>
+
       <section className="panel">
         <div className="panel-heading">
           <div>
@@ -302,6 +501,7 @@ export default function AdminDashboard() {
                   <th>Request</th>
                   <th>Journey</th>
                   <th>Status</th>
+                  <th>Priority</th>
                   <th>Score</th>
                   <th>Updated</th>
                   <th>Simulated action</th>
@@ -325,6 +525,16 @@ export default function AdminDashboard() {
                       </td>
                       <td>
                         <ExchangeStatus status={exchange.status} />
+                      </td>
+                      <td>
+                        {exchange.priority_tier === "SENIOR_PRIORITY" ? (
+                          <span className="badge badge-priority">
+                            <Sparkles size={12} aria-hidden="true" />
+                            Senior
+                          </span>
+                        ) : (
+                          <span className="muted small">Standard</span>
+                        )}
                       </td>
                       <td>{formatScore(exchange.compatibility_score)}</td>
                       <td>

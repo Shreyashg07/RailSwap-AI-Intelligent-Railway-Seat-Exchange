@@ -90,6 +90,14 @@ export default function Dashboard() {
         </div>
       </header>
 
+      {data?.priority?.your_priority_active && (
+        <div className="inline-notice inline-notice-info">
+          <Sparkles size={16} aria-hidden="true" />
+          Senior-citizen priority is active on your demo profile. It applies a
+          small, capped ranking adjustment only after eligibility passes.
+        </div>
+      )}
+
       {error && <ErrorState message={error} onRetry={load} />}
 
       <section className="stats-grid" aria-label="Account statistics">
@@ -104,7 +112,7 @@ export default function Dashboard() {
           icon={UsersRound}
           label="Compatible matches"
           value={stats.compatible_matches ?? 0}
-          hint="Reciprocal eligible candidates"
+          hint={`${matching.priority_matches ?? 0} with priority adjustment`}
           tone="teal"
           loading={loading}
         />

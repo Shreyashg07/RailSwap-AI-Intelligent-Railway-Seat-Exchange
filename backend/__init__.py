@@ -43,6 +43,9 @@ def create_app(config_object=Config):
     if app.config.get("AUTO_CREATE_DB", True):
         with app.app_context():
             db.create_all()
+        from backend.schema_sync import ensure_schema_compatibility
+
+        ensure_schema_compatibility(app)
 
     return app
 
@@ -50,6 +53,7 @@ def create_app(config_object=Config):
 def register_jwt_callbacks():
     from flask_jwt_extended import current_user
 
+    from backend.constants import ACCOUNT_ACTIVE
     from backend.models import User
 
     @jwt.user_identity_loader
@@ -62,12 +66,27 @@ def register_jwt_callbacks():
     def user_lookup_callback(_jwt_header, jwt_data):
         identity = jwt_data.get("sub")
         try:
-            return db.session.get(User, int(identity))
+            user = db.session.get(User, int(identity))
         except (TypeError, ValueError):
             return None
+        if user is not None and user.account_status != ACCOUNT_ACTIVE:
+            return None
+        return user
 
     @jwt.user_lookup_error_loader
-    def user_lookup_error(_jwt_header, _jwt_data):
+    def user_lookup_error(_jwt_header, jwt_data):
+        identity = jwt_data.get("sub")
+        try:
+            user = db.session.get(User, int(identity))
+        except (TypeError, ValueError):
+            user = None
+        if user is not None:
+            return error_response(
+                "This demo account is restricted while an administrator "
+                "reviews a security signal.",
+                403,
+                "ACCOUNT_RESTRICTED",
+            )
         return error_response(
             "The authenticated account could not be found.", 401, "USER_NOT_FOUND"
         )

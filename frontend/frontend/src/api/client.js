@@ -239,4 +239,16 @@ export const adminApi = {
       method: "POST",
       body: { target_status: targetStatus },
     }),
+  fraudAlerts: (filters = {}) =>
+    request(`/admin/fraud-alerts${queryString(filters)}`),
+  resolveFraudAlert: (alertId, data) =>
+    request(`/admin/fraud-alerts/${alertId}/resolve`, {
+      method: "POST",
+      body: data,
+    }),
+  updateUserStatus: (userId, status) =>
+    request(`/admin/users/${userId}/status`, {
+      method: "POST",
+      body: { status },
+    }),
 };

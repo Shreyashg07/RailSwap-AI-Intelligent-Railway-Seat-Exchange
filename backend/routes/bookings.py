@@ -8,6 +8,7 @@ from backend.errors import ApiError
 from backend.extensions import db
 from backend.models import Berth, Booking, ExchangeRequest, Journey
 from backend.security import owned_booking_or_404
+from backend.services.abuse_service import enforce_booking_limit
 from backend.services.matching_service import booking_has_active_exchange
 from backend.utils import generate_demo_reference
 from backend.validation import json_body, require_int
@@ -34,6 +35,7 @@ def list_bookings():
 @bookings_bp.post("")
 @jwt_required()
 def create_booking():
+    enforce_booking_limit(current_user)
     payload = json_body()
     journey_id = require_int(payload.get("journey_id"), "journey_id", 1)
     berth_id = require_int(payload.get("berth_id"), "berth_id", 1)

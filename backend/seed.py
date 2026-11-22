@@ -6,7 +6,10 @@ Usage:
 """
 
 import argparse
+import json
 from datetime import date, timedelta
+
+from flask import current_app
 
 from backend import create_app
 from backend.constants import (
@@ -16,6 +19,7 @@ from backend.constants import (
     EXCHANGE_ACCEPTED_BY_BOTH,
     EXCHANGE_DECLINED,
     EXCHANGE_PENDING,
+    FRAUD_ALERT_OPEN,
 )
 from backend.extensions import db
 from backend.models import (
@@ -24,13 +28,17 @@ from backend.models import (
     Coach,
     ExchangeEvent,
     ExchangeRequest,
+    FraudAlert,
     Journey,
+    LoginAttempt,
     Notification,
     Preference,
     Train,
     User,
 )
+from backend.services.abuse_service import hash_identifier
 from backend.services.matching_service import evaluate_candidate
+from backend.services.priority_service import pair_priority
 from backend.services.scoring_service import candidate_features
 from backend.utils import utcnow
 
@@ -57,6 +65,25 @@ DEMO_USERS = [
     ("Vikram Demo", "vikram@railswap.demo", "user", True),
     ("Meera Demo", "meera@railswap.demo", "user", False),
 ]
+
+# Optional, self-declared synthetic profiles used to demonstrate the senior
+# priority policy and its privacy controls. These are not real people.
+DEMO_PROFILES = {
+    "aarav@railswap.demo": {
+        "date_of_birth": "1958-05-14",
+        "senior_priority_opt_in": True,
+        "share_priority_status": True,
+    },
+    "meera@railswap.demo": {
+        "date_of_birth": "1952-11-02",
+        "senior_priority_opt_in": True,
+        "share_priority_status": False,
+    },
+    "priya@railswap.demo": {"date_of_birth": "1994-02-19"},
+    "rohan@railswap.demo": {"date_of_birth": "1990-08-03"},
+    "ananya@railswap.demo": {"date_of_birth": "1988-12-11"},
+    "vikram@railswap.demo": {"date_of_birth": "1979-07-27"},
+}
 
 TRAINS = [
     {
@@ -162,10 +189,16 @@ def _score_pair(requester_booking, recipient_booking):
         requester_preference=requester_booking.preference,
         candidate_preference=recipient_booking.preference,
     )
-    _features, details = candidate_features(
-        requester_booking, recipient_booking, eligibility
+    priority_context = pair_priority(
+        requester_booking, recipient_booking
     )
-    return details["score"]
+    _features, details = candidate_features(
+        requester_booking,
+        recipient_booking,
+        eligibility,
+        priority_context=priority_context,
+    )
+    return details["score"], priority_context
 
 
 def _ensure_exchange(requester_booking, recipient_booking, status):
@@ -175,11 +208,21 @@ def _ensure_exchange(requester_booking, recipient_booking, status):
     ).first()
     if existing:
         return existing
+    score, priority_context = _score_pair(
+        requester_booking, recipient_booking
+    )
+    ttl_hours = int(current_app.config.get("PENDING_REQUEST_TTL_HOURS", 72))
     exchange = ExchangeRequest(
         requester_booking_id=requester_booking.id,
         recipient_booking_id=recipient_booking.id,
         status=status,
-        compatibility_score=_score_pair(requester_booking, recipient_booking),
+        compatibility_score=score,
+        priority_tier=priority_context["tier"],
+        expires_at=(
+            utcnow() + timedelta(hours=ttl_hours)
+            if status == EXCHANGE_PENDING and ttl_hours > 0
+            else None
+        ),
     )
     db.session.add(exchange)
     db.session.flush()
@@ -264,6 +307,20 @@ def seed_data(reset=False):
                 role,
                 DEMO_PASSWORD,
                 share_display_name,
+            )
+        for email, profile in DEMO_PROFILES.items():
+            user = users.get(email)
+            if user is None:
+                continue
+            if profile.get("date_of_birth"):
+                user.date_of_birth = date.fromisoformat(
+                    profile["date_of_birth"]
+                )
+            user.senior_priority_opt_in = profile.get(
+                "senior_priority_opt_in", True
+            )
+            user.share_priority_status = profile.get(
+                "share_priority_status", True
             )
 
         journey_by_train = {}
@@ -394,6 +451,43 @@ def seed_data(reset=False):
         _ensure_exchange(aarav_booking, priya_booking, EXCHANGE_PENDING)
         _ensure_exchange(vikram_booking, meera_booking, EXCHANGE_DECLINED)
         _ensure_exchange(aarav_j2, priya_j2, EXCHANGE_ACCEPTED_BY_BOTH)
+
+        if FraudAlert.query.count() == 0:
+            db.session.add(
+                FraudAlert(
+                    user_id=users["vikram@railswap.demo"].id,
+                    alert_type="REPEAT_DECLINED_REQUEST",
+                    severity="MEDIUM",
+                    status=FRAUD_ALERT_OPEN,
+                    summary=(
+                        "Synthetic demo signal: a passenger retried a pairing "
+                        "after a recent decline."
+                    ),
+                    details=json.dumps(
+                        {
+                            "cooldown_hours": 24,
+                            "synthetic": True,
+                            "note": "Seeded demonstration alert only.",
+                        },
+                        sort_keys=True,
+                    ),
+                )
+            )
+        if LoginAttempt.query.count() == 0:
+            db.session.add(
+                LoginAttempt(
+                    email_hash=hash_identifier("aarav@railswap.demo"),
+                    ip_address="127.0.0.1",
+                    success=False,
+                )
+            )
+            db.session.add(
+                LoginAttempt(
+                    email_hash=hash_identifier("aarav@railswap.demo"),
+                    ip_address="127.0.0.1",
+                    success=True,
+                )
+            )
 
         db.session.commit()
 

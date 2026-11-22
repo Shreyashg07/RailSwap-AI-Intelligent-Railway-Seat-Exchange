@@ -95,7 +95,7 @@ def test_create_and_accept_exchange_without_claiming_official_change(client, app
     assert notifications.get_json()["count"] >= 1
 
 
-def test_decline_and_new_request_after_terminal_state(client, app):
+def test_declined_pair_is_subject_to_repeat_request_cooldown(client, app):
     world = _exchange_world(app)
     requester_headers = login_headers(client, "requester@example.test")
     recipient_headers = login_headers(client, "recipient@example.test")
@@ -108,8 +108,20 @@ def test_decline_and_new_request_after_terminal_state(client, app):
     assert declined.get_json()["exchange"]["status"] == "DECLINED"
 
     retry = _create(client, requester_headers, world)
-    assert retry.status_code == 201
-    assert retry.get_json()["exchange"]["status"] == "PENDING"
+    assert retry.status_code == 429
+    assert retry.get_json()["error"]["code"] == "REQUEST_COOLDOWN"
+
+    alerts = client.get(
+        "/api/admin/fraud-alerts?status=OPEN",
+        headers=login_headers(
+            client, "admin@example.test", password=ADMIN_PASSWORD
+        ),
+    )
+    assert alerts.status_code == 200
+    assert any(
+        alert["alert_type"] == "REPEAT_DECLINED_REQUEST"
+        for alert in alerts.get_json()["items"]
+    )
 
 
 def test_self_exchange_and_duplicate_active_requests_are_rejected(client, app):

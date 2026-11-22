@@ -5,11 +5,14 @@ from backend.constants import (
     ACTIVE_EXCHANGE_STATUSES,
     EXCHANGE_COMPLETED,
     EXCHANGE_PENDING,
+    PRIORITY_SENIOR,
 )
 from backend.extensions import db
 from backend.models import Booking, ExchangeRequest, Notification
+from backend.services.expiry_service import expire_stale_requests
 from backend.services.matching_service import find_matches
 from backend.services.ml_service import ml_service
+from backend.services.priority_service import policy_meta
 from backend.utils import isoformat, utcnow
 
 analytics_bp = Blueprint("analytics", __name__, url_prefix="/api/analytics")
@@ -27,6 +30,7 @@ def _own_booking_ids():
 @analytics_bp.get("/dashboard")
 @jwt_required()
 def dashboard():
+    expire_stale_requests()
     bookings = (
         Booking.query.filter_by(user_id=current_user.id)
         .order_by(Booking.created_at.desc())
@@ -75,6 +79,7 @@ def dashboard():
     )
 
     matched_candidates = {}
+    priority_candidate_ids = set()
     bookings_with_preferences = 0
     engine_mode = "rule_based_fallback"
     matching_limitations = []
@@ -92,6 +97,8 @@ def dashboard():
                 matched_candidates[match["candidate_booking_id"]] = match[
                     "compatibility_score"
                 ]
+            if match.get("priority", {}).get("applied"):
+                priority_candidate_ids.add(match["candidate_booking_id"])
 
     average_score = (
         round(sum(matched_candidates.values()) / len(matched_candidates), 2)
@@ -145,6 +152,13 @@ def dashboard():
                 "id": exchange.id,
                 "status": exchange.status,
                 "compatibility_score": exchange.compatibility_score,
+                "priority_tier": exchange.priority_tier,
+                "priority_label": (
+                    "Senior priority request"
+                    if exchange.priority_tier == PRIORITY_SENIOR
+                    else "Standard request"
+                ),
+                "expires_at": isoformat(exchange.expires_at),
                 "direction": "OUTGOING" if is_requester else "INCOMING",
                 "other_display_name": other_booking.user.public_identity(),
                 "updated_at": isoformat(exchange.updated_at),
@@ -174,13 +188,24 @@ def dashboard():
                 "pending_responses": len(pending_responses),
                 "completed_exchanges": len(completed),
                 "unread_notifications": unread_count,
+                "senior_priority_active_exchanges": sum(
+                    1
+                    for exchange in active_exchanges
+                    if exchange.priority_tier == PRIORITY_SENIOR
+                ),
             },
             "matching_stats": {
                 "bookings_with_preferences": bookings_with_preferences,
                 "eligible_candidates": len(matched_candidates),
                 "average_compatibility_score": average_score,
+                "priority_matches": len(priority_candidate_ids),
                 "engine_mode": engine_mode,
                 "limitations": matching_limitations,
+            },
+            "priority": {
+                "policy": policy_meta(),
+                "your_status": current_user.priority_public(),
+                "your_priority_active": current_user.senior_priority_active(),
             },
             "journeys": journey_items,
             "recent_exchanges": recent_exchanges,

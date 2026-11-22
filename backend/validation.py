@@ -1,8 +1,10 @@
 import re
+from datetime import date
 
 from flask import request
 
 from backend.errors import ApiError
+from backend.utils import parse_iso_date
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -52,6 +54,43 @@ def clean_email(value):
 def clean_password(value):
     password = clean_string(value, "Password", min_length=8, max_length=128)
     return password
+
+
+def clean_bool(value, field, required=False):
+    if value is None:
+        if required:
+            raise ApiError(f"{field} is required.", 400, "VALIDATION_ERROR")
+        return None
+    if not isinstance(value, bool):
+        raise ApiError(f"{field} must be a boolean.", 400, "VALIDATION_ERROR")
+    return value
+
+
+def clean_date_of_birth(value, field="Date of birth"):
+    if value in (None, ""):
+        return None
+    parsed = parse_iso_date(value)
+    if parsed is None:
+        raise ApiError(
+            f"{field} must use the YYYY-MM-DD format.",
+            400,
+            "VALIDATION_ERROR",
+        )
+    today = date.today()
+    if parsed > today:
+        raise ApiError(
+            f"{field} cannot be in the future.", 400, "VALIDATION_ERROR"
+        )
+    age = today.year - parsed.year - (
+        (today.month, today.day) < (parsed.month, parsed.day)
+    )
+    if age > 120:
+        raise ApiError(
+            f"{field} does not represent a plausible age for the demo.",
+            400,
+            "VALIDATION_ERROR",
+        )
+    return parsed
 
 
 def require_int(value, field, minimum=None):

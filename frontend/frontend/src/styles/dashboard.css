@@ -512,6 +512,14 @@
   transform: translateX(17px);
 }
 
+.priority-panel {
+  border-color: rgba(251, 191, 36, 0.16);
+}
+
+.priority-panel .toggle-row + .toggle-row {
+  margin-top: 9px;
+}
+
 .privacy-facts {
   display: flex;
   flex-direction: column;

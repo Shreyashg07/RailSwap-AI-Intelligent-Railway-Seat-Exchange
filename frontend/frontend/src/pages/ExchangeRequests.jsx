@@ -3,11 +3,13 @@ import {
   ArrowLeftRight,
   ArrowUpRight,
   Check,
+  Clock3,
   Download,
   Inbox,
   Info,
   MapPin,
   Send,
+  Sparkles,
   X,
   XCircle,
 } from "lucide-react";
@@ -32,6 +34,7 @@ const FILTERS = [
   { id: "incoming", label: "Incoming" },
   { id: "outgoing", label: "Outgoing" },
   { id: "active", label: "Active" },
+  { id: "priority", label: "Priority" },
 ];
 
 export default function ExchangeRequests() {
@@ -78,6 +81,9 @@ export default function ExchangeRequests() {
     if (filter === "active") {
       return items.filter((item) => item.can_cancel);
     }
+    if (filter === "priority") {
+      return items.filter((item) => item.priority_tier === "SENIOR_PRIORITY");
+    }
     return items;
   }, [items, filter]);
 
@@ -87,6 +93,9 @@ export default function ExchangeRequests() {
       incoming: items.filter((item) => item.direction === "INCOMING").length,
       outgoing: items.filter((item) => item.direction === "OUTGOING").length,
       active: items.filter((item) => item.can_cancel).length,
+      priority: items.filter(
+        (item) => item.priority_tier === "SENIOR_PRIORITY"
+      ).length,
     }),
     [items]
   );
@@ -280,6 +289,12 @@ export default function ExchangeRequests() {
                   </div>
                   <div className="exchange-card-status">
                     <ExchangeStatus status={exchange.status} />
+                    {exchange.priority_tier === "SENIOR_PRIORITY" && (
+                      <span className="badge badge-priority">
+                        <Sparkles size={12} aria-hidden="true" />
+                        {exchange.priority_label}
+                      </span>
+                    )}
                     <span className="exchange-score">
                       Score {formatScore(exchange.compatibility_score)}
                     </span>
@@ -317,6 +332,12 @@ export default function ExchangeRequests() {
                   <div className="exchange-timestamps">
                     <span>Updated {relativeTime(exchange.updated_at)}</span>
                     <span>Created {formatDateTime(exchange.created_at)}</span>
+                    {exchange.expires_at && exchange.status === "PENDING" && (
+                      <span>
+                        <Clock3 size={12} aria-hidden="true" />
+                        Expires {formatDateTime(exchange.expires_at)}
+                      </span>
+                    )}
                   </div>
                   <div className="exchange-actions">
                     {exchange.can_accept && (

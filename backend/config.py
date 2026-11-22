@@ -57,6 +57,38 @@ class Config:
     MATCHING_RESULT_LIMIT = int(os.environ.get("MATCHING_RESULT_LIMIT", "20"))
     MAX_ACTIVE_MATCHES = int(os.environ.get("MAX_ACTIVE_MATCHES", "5"))
 
+    # Demonstration senior-citizen priority policy. Age and bonus are
+    # configurable, self-declared, and never override hard eligibility.
+    SENIOR_CITIZEN_AGE = int(os.environ.get("SENIOR_CITIZEN_AGE", "60"))
+    SENIOR_PRIORITY_BONUS = float(os.environ.get("SENIOR_PRIORITY_BONUS", "3.0"))
+
+    # Abuse and misuse protection. The short-window rate limiter is in-memory;
+    # login attempts and fraud alerts are persisted for the demo.
+    RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "true").lower() == "true"
+    LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
+    LOGIN_IP_MAX_ATTEMPTS = int(os.environ.get("LOGIN_IP_MAX_ATTEMPTS", "100"))
+    LOGIN_WINDOW_MINUTES = int(os.environ.get("LOGIN_WINDOW_MINUTES", "15"))
+    REGISTER_MAX_PER_HOUR = int(os.environ.get("REGISTER_MAX_PER_HOUR", "5"))
+    EXCHANGE_REQUESTS_PER_HOUR = int(os.environ.get("EXCHANGE_REQUESTS_PER_HOUR", "10"))
+    EXCHANGE_REQUESTS_PER_DAY = int(os.environ.get("EXCHANGE_REQUESTS_PER_DAY", "25"))
+    MAX_ACTIVE_EXCHANGE_REQUESTS_PER_USER = int(
+        os.environ.get("MAX_ACTIVE_EXCHANGE_REQUESTS_PER_USER", "3")
+    )
+    DECLINED_REQUEST_COOLDOWN_HOURS = int(
+        os.environ.get("DECLINED_REQUEST_COOLDOWN_HOURS", "24")
+    )
+    PENDING_REQUEST_TTL_HOURS = int(os.environ.get("PENDING_REQUEST_TTL_HOURS", "72"))
+    MAX_BOOKINGS_PER_USER = int(os.environ.get("MAX_BOOKINGS_PER_USER", "8"))
+    PASSWORD_CHANGES_PER_HOUR = int(
+        os.environ.get("PASSWORD_CHANGES_PER_HOUR", "5")
+    )
+    MATCHING_SEARCHES_PER_HOUR = int(
+        os.environ.get("MATCHING_SEARCHES_PER_HOUR", "120")
+    )
+    EXCHANGE_ACTIONS_PER_HOUR = int(
+        os.environ.get("EXCHANGE_ACTIONS_PER_HOUR", "60")
+    )
+
 
 class TestingConfig(Config):
     TESTING = True

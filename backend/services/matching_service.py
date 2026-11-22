@@ -7,6 +7,11 @@ from backend.extensions import db
 from backend.models import Berth, Booking, ExchangeRequest, Journey, Preference, Train
 from backend.services.explanation_service import build_explanation
 from backend.services.ml_service import ml_service
+from backend.services.priority_service import (
+    pair_priority,
+    policy_meta,
+    public_priority_payload,
+)
 from backend.services.scoring_service import candidate_features
 from backend.utils import isoformat, utcnow
 
@@ -17,13 +22,24 @@ APPLICATION_LIMITATIONS = [
 ]
 
 
+def _unexpired_clause(now=None):
+    now = now or utcnow()
+    return db.or_(
+        ExchangeRequest.expires_at.is_(None),
+        ExchangeRequest.expires_at > now,
+    )
+
+
 def active_booking_ids():
     rows = (
         db.session.query(
             ExchangeRequest.requester_booking_id,
             ExchangeRequest.recipient_booking_id,
         )
-        .filter(ExchangeRequest.status.in_(ACTIVE_EXCHANGE_STATUSES))
+        .filter(
+            ExchangeRequest.status.in_(ACTIVE_EXCHANGE_STATUSES),
+            _unexpired_clause(),
+        )
         .all()
     )
     ids = set()
@@ -37,6 +53,7 @@ def booking_has_active_exchange(booking_id):
     return (
         ExchangeRequest.query.filter(
             ExchangeRequest.status.in_(ACTIVE_EXCHANGE_STATUSES),
+            _unexpired_clause(),
             db.or_(
                 ExchangeRequest.requester_booking_id == booking_id,
                 ExchangeRequest.recipient_booking_id == booking_id,
@@ -327,6 +344,7 @@ def _candidate_public_payload(requester_booking, candidate_booking, result):
         "score_breakdown": result["score_details"],
         "features": result["features"],
         "eligibility": result["eligibility"],
+        "priority": result.get("priority"),
         "explanation": result["explanation"],
         "ml": result["ml"],
         "limitations": APPLICATION_LIMITATIONS,
@@ -339,8 +357,12 @@ def _score_pair(
     eligibility,
     include_rank=None,
 ):
+    priority_context = pair_priority(requester_booking, candidate_booking)
     features, score_details = candidate_features(
-        requester_booking, candidate_booking, eligibility
+        requester_booking,
+        candidate_booking,
+        eligibility,
+        priority_context=priority_context,
     )
     ml_score = ml_service.predict(features)
     ml_status = ml_service.status()
@@ -362,11 +384,14 @@ def _score_pair(
         features,
         score_details,
         ml_result,
+        priority_context,
     )
     result = {
         "score_details": score_details,
         "features": features,
         "eligibility": eligibility,
+        "priority": public_priority_payload(priority_context),
+        "priority_context": priority_context,
         "ml": ml_result,
         "ml_status": ml_status,
         "explanation": explanation,
@@ -429,6 +454,7 @@ def find_matches(requester_booking, preference=None, limit=20):
     results.sort(
         key=lambda item: (
             -item["result"]["score_details"]["score"],
+            0 if item["result"]["priority"]["applied"] else 1,
             item["candidate"].id,
         )
     )
@@ -454,9 +480,16 @@ def find_matches(requester_booking, preference=None, limit=20):
             "limit": effective_limit,
             "requester_booking_id": requester_booking.id,
             "requester_has_active_exchange": requester_booking.id in blocked_ids,
-            "score_method": "deterministic_weighted_baseline",
-            "ranking_tie_break": "lower candidate_booking_id",
+            "score_method": "deterministic_weighted_baseline_plus_policy",
+            "ranking_tie_break": (
+                "higher final score, then senior-priority pairs, then lower "
+                "candidate_booking_id"
+            ),
             "weights": dict(SCORE_WEIGHTS),
+            "priority_policy": policy_meta(),
+            "priority_matches": sum(
+                1 for item in top_results if item["result"]["priority"]["applied"]
+            ),
             "limitations": APPLICATION_LIMITATIONS,
             "ml": ml_status,
             "generated_at": isoformat(utcnow()),

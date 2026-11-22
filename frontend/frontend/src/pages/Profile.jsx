@@ -21,6 +21,9 @@ export default function Profile() {
   const [profileValues, setProfileValues] = useState({
     display_name: user?.display_name || "",
     share_display_name: user?.share_display_name ?? true,
+    date_of_birth: user?.date_of_birth || "",
+    senior_priority_opt_in: user?.senior_priority_opt_in ?? true,
+    share_priority_status: user?.share_priority_status ?? true,
   });
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState("");
@@ -52,8 +55,11 @@ export default function Profile() {
       await updateProfile({
         display_name: profileValues.display_name.trim(),
         share_display_name: profileValues.share_display_name,
+        date_of_birth: profileValues.date_of_birth || null,
+        senior_priority_opt_in: profileValues.senior_priority_opt_in,
+        share_priority_status: profileValues.share_priority_status,
       });
-      setProfileMessage("Profile and privacy settings saved.");
+      setProfileMessage("Profile, priority, and privacy settings saved.");
     } catch (err) {
       setProfileError(err.message || "The profile could not be saved.");
     } finally {
@@ -138,6 +144,30 @@ export default function Profile() {
                 }
                 disabled={profileSaving}
               />
+            </div>
+            <div className="field">
+              <label htmlFor="profile-dob">Date of birth (optional)</label>
+              <div className="input-with-icon">
+                <CalendarDays size={16} aria-hidden="true" />
+                <input
+                  id="profile-dob"
+                  type="date"
+                  value={profileValues.date_of_birth || ""}
+                  max={new Date().toISOString().slice(0, 10)}
+                  onChange={(event) =>
+                    setProfileValues((current) => ({
+                      ...current,
+                      date_of_birth: event.target.value,
+                    }))
+                  }
+                  disabled={profileSaving}
+                  aria-describedby="dob-help"
+                />
+              </div>
+              <p id="dob-help" className="field-hint">
+                Used only for the optional senior-priority demonstration. Leave
+                blank to keep the field unset. No identity document is collected.
+              </p>
             </div>
             <div className="field">
               <label htmlFor="profile-email">Email address</label>
@@ -248,6 +278,88 @@ export default function Profile() {
             <Download size={16} />
             Export exchange summary
           </Link>
+        </section>
+
+        <section className="panel priority-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="section-kicker">
+                <ShieldCheck size={14} aria-hidden="true" />
+                Optional policy
+              </span>
+              <h2>Senior-citizen priority</h2>
+            </div>
+            <span
+              className={`badge ${
+                user?.senior_priority_active ? "badge-success" : "badge-soft"
+              }`}
+            >
+              {user?.senior_priority_active ? "Active" : "Not active"}
+            </span>
+          </div>
+          <p className="field-hint">
+            This is a self-declared demonstration policy for passengers aged 60+.
+            It adds a small, transparent ranking adjustment only after every hard
+            eligibility check passes. It is not official railway priority and never
+            makes an ineligible pair eligible.
+          </p>
+          <label className="toggle-row">
+            <span className="toggle-copy">
+              <ShieldCheck size={19} aria-hidden="true" />
+              <span>
+                <strong>Apply senior-priority ranking when I am eligible</strong>
+                <small>
+                  {user?.date_of_birth
+                    ? `Current demo age: ${user.age ?? "unknown"}. Threshold: 60.`
+                    : "Add your date of birth above to make this policy available."}
+                </small>
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={profileValues.senior_priority_opt_in}
+              onChange={(event) =>
+                setProfileValues((current) => ({
+                  ...current,
+                  senior_priority_opt_in: event.target.checked,
+                }))
+              }
+              disabled={profileSaving}
+            />
+          </label>
+          <label className="toggle-row">
+            <span className="toggle-copy">
+              {profileValues.share_priority_status ? (
+                <Eye size={19} aria-hidden="true" />
+              ) : (
+                <EyeOff size={19} aria-hidden="true" />
+              )}
+              <span>
+                <strong>Show my priority status to matched passengers</strong>
+                <small>
+                  When disabled, candidates see “Private priority status.” The
+                  application still applies the policy internally but does not
+                  publish your label.
+                </small>
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={profileValues.share_priority_status}
+              onChange={(event) =>
+                setProfileValues((current) => ({
+                  ...current,
+                  share_priority_status: event.target.checked,
+                }))
+              }
+              disabled={profileSaving}
+            />
+          </label>
+          <div className="inline-notice inline-notice-info compact-notice">
+            <LockKeyhole size={15} aria-hidden="true" />
+            Date of birth is optional, self-declared, and stored only in this local
+            synthetic demo database.
+          </div>
         </section>
 
         <section className="panel">

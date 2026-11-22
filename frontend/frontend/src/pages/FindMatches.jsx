@@ -22,6 +22,7 @@ import {
   berthLabel,
   coachScopeLabel,
   formatDate,
+  formatScore,
 } from "../utils/formatters";
 import { hasErrors, validatePreference } from "../utils/validators";
 
@@ -348,7 +349,8 @@ export default function FindMatches() {
                 </li>
                 <li>
                   <strong>Then ranking.</strong> Eligible pairs receive a
-                  reproducible weighted score, with lower booking ID as the tie-break.
+                  reproducible weighted score, followed by the optional senior
+                  priority adjustment and lower booking ID as the tie-break.
                 </li>
               </ol>
               <div className="inline-notice inline-notice-info compact-notice">
@@ -386,8 +388,25 @@ export default function FindMatches() {
                   <span className="badge badge-soft">
                     {meta?.excluded_count ?? 0} excluded by hard rules
                   </span>
+                  {(meta?.priority_matches ?? 0) > 0 && (
+                    <span className="badge badge-priority">
+                      <Sparkles size={13} aria-hidden="true" />
+                      {meta.priority_matches} priority{" "}
+                      {meta.priority_matches === 1 ? "match" : "matches"}
+                    </span>
+                  )}
                 </div>
               </div>
+
+              {meta?.priority_policy && (
+                <div className="inline-notice inline-notice-info compact-notice">
+                  <Info size={15} aria-hidden="true" />
+                  Senior priority is an optional self-declared demo policy for
+                  passengers aged {meta.priority_policy.threshold_age}+. It adds a
+                  capped +{formatScore(meta.priority_policy.bonus_points)} ranking
+                  adjustment after eligibility and never overrides a failed rule.
+                </div>
+              )}
 
               {meta?.requester_has_active_exchange && (
                 <div className="inline-notice inline-notice-warning">

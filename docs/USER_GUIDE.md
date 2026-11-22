@@ -75,7 +75,7 @@ After signing in as **Rohan Demo**, the sidebar provides:
 | Preferences | Berth and coach-scope preferences |
 | Exchange Requests | Incoming/outgoing requests and actions |
 | Notifications | Exchange notifications and read state |
-| Profile & Privacy | Display name, sharing, and password |
+| Profile & Privacy | Display name, sharing, priority, and password |
 | ML Lab | Actual synthetic-label evaluation and model status |
 | Administrator Console | Admin-only aggregate and redacted views |
 
@@ -116,6 +116,8 @@ The ML value is supporting information only. It cannot make an ineligible pair e
 
 Choose **Send consent request**. The request becomes `PENDING`. An application notification is created for the recipient.
 
+A pending request expires automatically after the configured TTL (default 72 hours) if the recipient does not respond. The exchange page shows the expiry timestamp.
+
 This is a consent request between demo users. No berth is reassigned.
 
 ### Step 4: Respond as the recipient
@@ -127,7 +129,7 @@ This is a consent request between demo users. No berth is reassigned.
 
 If accepted, the state becomes `ACCEPTED_BY_BOTH`.
 
-If declined, the state becomes `DECLINED` and the request is terminal. The relevant bookings are released from the active-exchange conflict and can be used in a later request, if still eligible.
+If declined, the state becomes `DECLINED` and the request is terminal. The relevant bookings are released from the active-exchange conflict. A repeat request for the same pairing is subject to a configurable cooldown (default 24 hours) and creates an administrator fraud alert if attempted too soon.
 
 ### Step 5: Observe the simulated authorization gate
 
@@ -142,7 +144,7 @@ The administrator button is an explicit simulation. No external system is contac
 
 ### Step 6: Check history and export
 
-As a participant, reopen the exchange to see its event history. Use **Export** on the exchange page to download `railswap-exchange-summary.json`. The export excludes passenger identity, email, booking reference, and ticket data.
+As a participant, reopen the exchange to see its event history, priority tier, and expiry timestamp. Use **Export** on the exchange page to download `railswap-exchange-summary.json`. The export excludes passenger identity, email, booking reference, and ticket data.
 
 ## 6. Understanding matching exclusions
 
@@ -200,21 +202,43 @@ Open **Profile & Privacy**.
 
 - Change the display name.
 - Turn **Share display name** off. Other passengers then see `Demo passenger` in candidate and exchange summaries, while your own profile still shows the real name.
+- Add an optional date of birth for the senior-priority demonstration.
+- Turn **Apply senior-priority ranking** on or off.
+- Turn **Show my priority status to matched passengers** on or off. When disabled, candidates see a private status label.
 - Change the password by supplying the current password and a new password of at least eight characters.
 
-The administrator's exchange view is always redacted regardless of this setting.
+The administrator's exchange view is always redacted regardless of these settings. Fraud alerts identify accounts only as `Demo user #id`.
+
+### Senior-citizen priority demonstration
+
+The priority policy is optional and self-declared:
+
+- It applies only when the declared age is at least 60 and the account has opted in.
+- It adds a small, capped adjustment (default `+3.0`) to the ranking score after every hard eligibility rule passes.
+- It is shown as a separate contribution in the score breakdown.
+- It is not an ML feature, not official railway priority, and cannot make an ineligible pair eligible.
+- **Meera Demo** is seeded as a senior passenger with private priority status. Search with her booking to see the adjustment without exposing her label.
 
 ## 10. Administrator console
 
 The administrator console shows:
 
-- aggregate counts for users, trains, journeys, bookings, requests, notifications, and active exchanges;
+- aggregate counts for users, trains, journeys, bookings, requests, notifications, active exchanges, and priority requests;
 - exchange counts by state;
+- a security summary with failed/successful sign-ins, open fraud alerts, and restricted accounts;
+- redacted fraud and abuse alerts;
 - redacted exchange summaries;
 - current ML artifact/fallback status;
 - allowed simulated state actions.
 
-Administrators cannot open another passenger's private booking endpoint and cannot see passenger names, emails, booking references, or ticket data in the exchange list.
+Administrators cannot open another passenger's private booking endpoint and cannot see passenger names, emails, booking references, or ticket data in the exchange list. Fraud alerts use only `Demo user #id` references.
+
+From the fraud-alert table, an administrator can:
+
+- **Resolve** or **dismiss** an alert without changing the account;
+- **Restrict** the associated account after review.
+
+Restriction immediately blocks sign-in and invalidates existing JWTs. Use `POST /api/admin/users/{user_id}/status` with `ACTIVE` to reactivate an account.
 
 ## 11. ML Lab
 
@@ -246,7 +270,7 @@ The export is an application-level demonstration record.
 
 ## 13. Resetting the demonstration
 
-To rebuild all synthetic users, trains, journeys, bookings, preferences, exchanges, and notifications:
+To rebuild all synthetic users, trains, journeys, bookings, preferences, exchanges, notifications, sign-in attempts, and fraud alerts:
 
 ```text
 .venv\Scripts\python.exe -m backend.seed --reset
@@ -285,6 +309,9 @@ If Python 3.14 is not available through the `py` launcher, use the `python` comm
 
 - Check email/password carefully.
 - Tokens expire after 12 hours by default; sign in again.
+- Five failed sign-ins temporarily lock the account for 15 minutes by default. Wait for the window to pass or reseed the demo database.
+- A successful sign-in resets the failed-attempt counter.
+- A restricted account returns `403 ACCOUNT_RESTRICTED`; an administrator must reactivate it.
 - Reset demo data only if you intend to discard local changes.
 
 ### No matches appear
@@ -311,7 +338,10 @@ Sign out and sign in again so the UI reloads the current accounts and seeded sta
 
 - Synthetic data only; no real railway, ticket, identity, or payment integration.
 - No official railway authorization is possible.
+- Senior-citizen priority is self-declared, not verified eligibility or official railway policy.
 - No production-grade token revocation, email verification, or MFA.
+- Rate limiting is in-memory and single-process; it is not shared across workers.
+- Pending-request expiry is evaluated lazily on API reads, not by a scheduled job.
 - SQLite is intended for local demonstration.
 - ML metrics do not predict real passenger acceptance.
 - Browser visual and accessibility checks should be completed manually before a presentation.

@@ -36,6 +36,10 @@ def make_user(
     role="user",
     password=PASSWORD,
     share_display_name=True,
+    date_of_birth=None,
+    senior_priority_opt_in=True,
+    share_priority_status=True,
+    account_status="ACTIVE",
 ):
     with app.app_context():
         user = User(
@@ -43,6 +47,10 @@ def make_user(
             email=email,
             role=role,
             share_display_name=share_display_name,
+            date_of_birth=date_of_birth,
+            senior_priority_opt_in=senior_priority_opt_in,
+            share_priority_status=share_priority_status,
+            account_status=account_status,
         )
         user.set_password(password)
         db.session.add(user)

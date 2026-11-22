@@ -1,5 +1,6 @@
 from backend.constants import SCORE_WEIGHTS
 from backend.ml.features import FEATURE_LABELS
+from backend.services.priority_service import public_priority_payload
 
 
 def clamp_unit(value):
@@ -59,6 +60,7 @@ def build_feature_values(
     requester_booking,
     candidate_booking,
     eligibility_result,
+    priority_context=None,
 ):
     same_journey = (
         requester_booking.journey_id == candidate_booking.journey_id
@@ -68,6 +70,9 @@ def build_feature_values(
         and candidate_booking.berth
         and requester_booking.berth.berth_type
         and candidate_booking.berth.berth_type
+    )
+    priority_applied = bool(
+        priority_context and priority_context.get("applied")
     )
     return {
         "same_journey": 1.0 if same_journey else 0.0,
@@ -84,16 +89,17 @@ def build_feature_values(
         "valid_berth_pair": 1.0 if valid_berth_pair else 0.0,
         "journey_active": 1.0 if eligibility_result["journey_active"] else 0.0,
         "scope_satisfied": 1.0 if eligibility_result["scope_satisfied"] else 0.0,
+        "senior_priority": 1.0 if priority_applied else 0.0,
     }
 
 
-def score_features(features):
+def score_features(features, priority_context=None):
     contributions = []
-    total = 0.0
+    base_total = 0.0
     for key, weight in SCORE_WEIGHTS.items():
         value = clamp_unit(features.get(key, 0.0))
         points = value * weight * 100.0
-        total += points
+        base_total += points
         contributions.append(
             {
                 "feature": key,
@@ -101,23 +107,57 @@ def score_features(features):
                 "value": round(value, 4),
                 "weight": weight,
                 "contribution": round(points, 2),
+                "kind": "weighted_baseline",
             }
         )
+
+    base_score = round(base_total, 2)
+    requested_bonus = (
+        float(priority_context.get("bonus_points", 0.0))
+        if priority_context and priority_context.get("applied")
+        else 0.0
+    )
+    effective_bonus = round(min(requested_bonus, max(0.0, 100.0 - base_score)), 2)
+    contributions.append(
+        {
+            "feature": "senior_priority",
+            "label": "Senior citizen priority policy",
+            "value": 1.0 if requested_bonus > 0 else 0.0,
+            "weight": round(requested_bonus / 100.0, 4),
+            "contribution": effective_bonus,
+            "kind": "policy_adjustment",
+        }
+    )
+    final_score = round(base_score + effective_bonus, 2)
     return {
-        "score": round(total, 2),
-        "scale": "0-100 weighted baseline",
+        "score": final_score,
+        "base_score": base_score,
+        "priority_adjustment": effective_bonus,
+        "priority_bonus_capped": effective_bonus < requested_bonus,
+        "scale": "0-100 weighted baseline plus transparent policy adjustment",
         "weights": dict(SCORE_WEIGHTS),
+        "priority_policy": public_priority_payload(priority_context),
         "contributions": contributions,
         "note": (
             "Weights are illustrative configuration values completed before "
-            "evaluation. The score is a ranking heuristic, not a probability "
-            "that a real passenger will accept an exchange."
+            "evaluation. The small senior-citizen policy adjustment is applied "
+            "only after all hard eligibility checks pass. The score is a "
+            "ranking heuristic, not a probability that a real passenger will "
+            "accept an exchange."
         ),
     }
 
 
-def candidate_features(requester_booking, candidate_booking, eligibility_result):
+def candidate_features(
+    requester_booking,
+    candidate_booking,
+    eligibility_result,
+    priority_context=None,
+):
     features = build_feature_values(
-        requester_booking, candidate_booking, eligibility_result
+        requester_booking,
+        candidate_booking,
+        eligibility_result,
+        priority_context=priority_context,
     )
-    return features, score_features(features)
+    return features, score_features(features, priority_context=priority_context)

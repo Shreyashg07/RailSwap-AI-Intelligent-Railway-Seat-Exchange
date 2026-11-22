@@ -5,6 +5,7 @@ import pytest
 from backend import create_app
 from backend.config import Config
 from backend.extensions import db
+from backend.services.abuse_service import reset_runtime_limits
 from backend.services.ml_service import ml_service
 
 
@@ -40,8 +41,10 @@ def client(app):
 @pytest.fixture(autouse=True)
 def reset_ml_cache():
     ml_service.reset()
+    reset_runtime_limits()
     yield
     ml_service.reset()
+    reset_runtime_limits()
 
 
 @pytest.fixture

@@ -72,6 +72,12 @@ export default function MatchCard({ match, onView }) {
               <Sparkles size={13} aria-hidden="true" />
               Both directions verified
             </span>
+            {match.priority?.applied && (
+              <span className="badge badge-priority">
+                <Sparkles size={13} aria-hidden="true" />
+                Senior priority +{formatScore(match.priority.bonus_points)}
+              </span>
+            )}
           </div>
           <button
             type="button"

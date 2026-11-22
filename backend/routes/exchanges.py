@@ -3,11 +3,16 @@ import json
 from flask import Blueprint, Response, jsonify, request
 from flask_jwt_extended import current_user, jwt_required
 
-from backend.constants import ACTIVE_EXCHANGE_STATUSES, EXCHANGE_STATUSES
+from backend.constants import (
+    ACTIVE_EXCHANGE_STATUSES,
+    EXCHANGE_STATUSES,
+    PRIORITY_SENIOR,
+)
 from backend.errors import ApiError
 from backend.extensions import db
 from backend.models import Booking, ExchangeRequest
 from backend.security import participant_exchange_or_404
+from backend.services.abuse_service import enforce_exchange_action_rate_limit
 from backend.services.exchange_service import (
     accept_exchange,
     cancel_exchange,
@@ -15,6 +20,7 @@ from backend.services.exchange_service import (
     decline_exchange,
     serialize_exchange,
 )
+from backend.services.expiry_service import expire_stale_requests
 from backend.utils import isoformat, utcnow
 from backend.validation import json_body, require_int
 
@@ -33,6 +39,7 @@ def _own_booking_ids():
 @exchanges_bp.get("")
 @jwt_required()
 def list_exchanges():
+    expire_stale_requests()
     status = (request.args.get("status") or "").strip().upper()
     if status and status not in EXCHANGE_STATUSES:
         raise ApiError("Unknown exchange status filter.", 400, "VALIDATION_ERROR")
@@ -61,12 +68,32 @@ def list_exchanges():
 
     exchanges = query.order_by(ExchangeRequest.updated_at.desc()).all()
     items = [serialize_exchange(exchange, current_user.id) for exchange in exchanges]
-    return jsonify({"items": items, "count": len(items)})
+    items.sort(
+        key=lambda item: (
+            item["priority_tier"] == PRIORITY_SENIOR,
+            item["updated_at"] or "",
+        ),
+        reverse=True,
+    )
+    return jsonify(
+        {
+            "items": items,
+            "count": len(items),
+            "priority_count": sum(
+                1 for item in items if item["priority_tier"] == PRIORITY_SENIOR
+            ),
+            "notice": (
+                "Senior-priority requests are listed first for demonstration. "
+                "This is a self-declared application policy, not official railway priority."
+            ),
+        }
+    )
 
 
 @exchanges_bp.get("/export")
 @jwt_required()
 def export_exchanges():
+    expire_stale_requests()
     booking_ids = _own_booking_ids()
     exchanges = []
     if booking_ids:
@@ -93,6 +120,8 @@ def export_exchanges():
                 "exchange_id": exchange.id,
                 "status": exchange.status,
                 "compatibility_score": exchange.compatibility_score,
+                "priority_tier": exchange.priority_tier,
+                "expires_at": isoformat(exchange.expires_at),
                 "role": "REQUESTER" if exchange.requester_booking_id in own_ids else "RECIPIENT",
                 "journey_date": isoformat(journey.journey_date),
                 "train_number": journey.train.train_number,
@@ -152,6 +181,7 @@ def exchange_detail(exchange_id):
 @exchanges_bp.post("/<int:exchange_id>/accept")
 @jwt_required()
 def accept(exchange_id):
+    enforce_exchange_action_rate_limit(current_user)
     exchange = participant_exchange_or_404(exchange_id, current_user.id)
     updated = accept_exchange(exchange, current_user)
     return jsonify({"exchange": serialize_exchange(updated, current_user.id)})
@@ -160,6 +190,7 @@ def accept(exchange_id):
 @exchanges_bp.post("/<int:exchange_id>/decline")
 @jwt_required()
 def decline(exchange_id):
+    enforce_exchange_action_rate_limit(current_user)
     exchange = participant_exchange_or_404(exchange_id, current_user.id)
     updated = decline_exchange(exchange, current_user)
     return jsonify({"exchange": serialize_exchange(updated, current_user.id)})
@@ -168,6 +199,7 @@ def decline(exchange_id):
 @exchanges_bp.post("/<int:exchange_id>/cancel")
 @jwt_required()
 def cancel(exchange_id):
+    enforce_exchange_action_rate_limit(current_user)
     exchange = participant_exchange_or_404(exchange_id, current_user.id)
     updated = cancel_exchange(exchange, current_user)
     return jsonify({"exchange": serialize_exchange(updated, current_user.id)})

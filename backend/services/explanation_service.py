@@ -12,11 +12,15 @@ def build_explanation(
     features,
     score_details,
     ml_result,
+    priority_context=None,
 ):
     requester_pref = requester_booking.preference
     candidate_pref = candidate_booking.preference
     requester_name = "You"
     candidate_name = candidate_booking.user.public_identity()
+    priority_applied = bool(
+        priority_context and priority_context.get("applied")
+    )
 
     summary = (
         f"{requester_name} currently have a "
@@ -29,6 +33,11 @@ def build_explanation(
         if eligibility.get("reciprocal_satisfied")
         else "This candidate does not currently satisfy both directional preferences."
     )
+    if priority_applied:
+        summary += (
+            " The configured senior-citizen priority policy added a small, "
+            "transparent ranking adjustment; it did not affect eligibility."
+        )
 
     factor_messages = {
         "reciprocal_match": (
@@ -51,6 +60,13 @@ def build_explanation(
             "A higher value means the two berth numbers are physically closer; "
             "cross-coach pairs receive a proximity penalty."
         ),
+        "senior_priority": (
+            "A self-declared senior-citizen priority flag is active for one "
+            "passenger in this pair, so a small policy adjustment was added "
+            "after eligibility passed. It is not an official railway priority."
+            if features.get("senior_priority", 0) >= 1
+            else "No senior-citizen priority adjustment applied to this pair."
+        ),
     }
 
     factors = []
@@ -66,6 +82,11 @@ def build_explanation(
         "All trains, tickets, berths, and passengers in this project are synthetic demonstration data.",
         "The weighted compatibility score is a ranking heuristic, not a probability of acceptance.",
     ]
+    if priority_applied:
+        limitations.append(
+            "Senior-citizen priority is a self-declared demonstration policy, "
+            "not official railway priority or verified eligibility."
+        )
     if not eligibility.get("eligible"):
         limitations.insert(
             0,

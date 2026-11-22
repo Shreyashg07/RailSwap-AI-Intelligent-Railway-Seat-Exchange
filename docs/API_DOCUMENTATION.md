@@ -41,6 +41,8 @@ Typical authentication errors:
 | 401 | `TOKEN_EXPIRED` | Token lifetime elapsed |
 | 401 | `USER_NOT_FOUND` | Token subject no longer maps to a user |
 | 403 | `FORBIDDEN` | Authenticated but role/ownership check failed |
+| 403 | `ACCOUNT_RESTRICTED` | The demo account was restricted by an administrator |
+| 429 | `LOGIN_RATE_LIMITED` / `LOGIN_LOCKED` | Sign-in rate limit or temporary account lockout |
 
 ## 3. Error format
 
@@ -73,6 +75,7 @@ Common statuses:
 | 409 | Duplicate/conflict/invalid state transition |
 | 415 | Request is not JSON |
 | 422 | Candidate is not eligible for exchange |
+| 429 | Rate limit, lockout, or repeat-request cooldown |
 | 500 | Unexpected server error |
 
 ## 4. Shared object shapes
@@ -86,11 +89,18 @@ Common statuses:
   "email": "aarav@railswap.demo",
   "role": "user",
   "share_display_name": true,
+  "date_of_birth": "1958-05-14",
+  "age": 68,
+  "senior_citizen": true,
+  "senior_priority_active": true,
+  "senior_priority_opt_in": true,
+  "share_priority_status": true,
+  "account_status": "ACTIVE",
   "created_at": "2026-10-28T17:30:00Z"
 }
 ```
 
-`password_hash` is never returned.
+`password_hash` is never returned. `date_of_birth` is optional and self-declared for the demonstration priority policy.
 
 ### 4.2 Booking
 
@@ -156,7 +166,18 @@ A match is a public candidate summary plus explanations and an experimental ML v
   },
   "compatibility_score": 96.88,
   "rank": 1,
-  "score_breakdown": {},
+  "score_breakdown": {
+    "score": 96.88,
+    "base_score": 93.88,
+    "priority_adjustment": 3.0,
+    "priority_bonus_capped": false
+  },
+  "priority": {
+    "applied": true,
+    "tier": "SENIOR_PRIORITY",
+    "bonus_points": 3.0,
+    "candidate_status": "STANDARD"
+  },
   "features": {},
   "eligibility": {},
   "explanation": {},
@@ -165,7 +186,7 @@ A match is a public candidate summary plus explanations and an experimental ML v
 }
 ```
 
-Candidate email, user ID, password data, and booking reference are not returned. If the candidate disabled display-name sharing, `candidate_display_name` is `"Demo passenger"`.
+Candidate email, user ID, password data, and booking reference are not returned. If the candidate disabled display-name sharing, `candidate_display_name` is `"Demo passenger"`. If the candidate keeps priority status private, `priority.candidate_status` is `"PRIVATE"` and no label is exposed.
 
 ### 4.5 Exchange
 
@@ -174,6 +195,9 @@ Candidate email, user ID, password data, and booking reference are not returned.
   "id": 1,
   "status": "PENDING",
   "compatibility_score": 96.88,
+  "priority_tier": "SENIOR_PRIORITY",
+  "priority_label": "Senior priority request",
+  "expires_at": "2026-11-25T17:30:00Z",
   "direction": "OUTGOING",
   "created_at": "2026-10-28T17:30:00Z",
   "updated_at": "2026-10-28T17:30:00Z",
@@ -228,9 +252,12 @@ Candidate email, user ID, password data, and booking reference are not returned.
 | POST | `/notifications/read-all` | Mark all read | Authenticated |
 | GET | `/analytics/dashboard` | Passenger dashboard | Authenticated |
 | GET | `/analytics/ml-metrics` | ML metrics and model status | Authenticated |
-| GET | `/admin/overview` | Aggregate system overview | Admin |
+| GET | `/admin/overview` | Aggregate system overview and security summary | Admin |
 | GET | `/admin/exchanges` | Redacted exchange list | Admin |
 | POST | `/admin/exchanges/{exchange_id}/advance` | Simulated authorization transition | Admin |
+| GET | `/admin/fraud-alerts` | List redacted fraud/abuse alerts | Admin |
+| POST | `/admin/fraud-alerts/{alert_id}/resolve` | Resolve or dismiss an alert | Admin |
+| POST | `/admin/users/{user_id}/status` | Restrict or reactivate an account | Admin |
 
 ---
 
@@ -262,7 +289,10 @@ Request:
 {
   "display_name": "New Passenger",
   "email": "new@example.test",
-  "password": "StrongPass123"
+  "password": "StrongPass123",
+  "date_of_birth": "1955-04-12",
+  "senior_priority_opt_in": true,
+  "share_priority_status": true
 }
 ```
 
@@ -271,7 +301,10 @@ Rules:
 - `display_name`: 2-80 characters.
 - `email`: valid email pattern, normalized to lowercase, unique.
 - `password`: 8-128 characters.
+- `date_of_birth`: optional `YYYY-MM-DD`, not in the future, plausible age (0-120).
+- `senior_priority_opt_in` and `share_priority_status`: optional booleans, default `true`.
 - New accounts always have role `user`.
+- Registration is rate-limited per network address.
 
 Response `201`:
 
@@ -284,7 +317,7 @@ Response `201`:
 }
 ```
 
-Errors: `400 VALIDATION_ERROR`, `409 EMAIL_IN_USE`, `415 UNSUPPORTED_MEDIA_TYPE`.
+Errors: `400 VALIDATION_ERROR`, `409 EMAIL_IN_USE`, `415 UNSUPPORTED_MEDIA_TYPE`, `429 REGISTRATION_RATE_LIMITED`.
 
 ### `POST /api/auth/login`
 
@@ -299,7 +332,9 @@ Request:
 
 Response `200`: same shape as registration.
 
-Error: `401 INVALID_CREDENTIALS`.
+A successful sign-in resets the failed-attempt counter for that email within the lockout window.
+
+Errors: `401 INVALID_CREDENTIALS`, `403 ACCOUNT_RESTRICTED`, `429 LOGIN_LOCKED`, `429 LOGIN_RATE_LIMITED`.
 
 ### `GET /api/auth/me`
 
@@ -317,13 +352,19 @@ Accept any combination of supported fields:
 {
   "display_name": "Updated Name",
   "share_display_name": false,
+  "date_of_birth": "1955-04-12",
+  "senior_priority_opt_in": true,
+  "share_priority_status": false,
   "current_password": "Demo@1234",
   "new_password": "NewPassword123"
 }
 ```
 
 - `share_display_name` controls whether other passengers see the real display name.
-- Password change requires the current password.
+- `date_of_birth` is optional and self-declared for the demonstration priority policy.
+- `senior_priority_opt_in` enables the capped priority adjustment when the declared age meets the configured threshold.
+- `share_priority_status` controls whether matched passengers see the priority label.
+- Password change requires the current password and is rate-limited.
 - At least one supported field must be supplied.
 
 Errors: `400 VALIDATION_ERROR`, `400 INVALID_CURRENT_PASSWORD`.
@@ -515,7 +556,8 @@ Request:
 - `limit` is optional, clamped to 1-100.
 - Only reciprocal, hard-eligible candidates on the same journey are returned.
 - Active-exchange bookings are excluded.
-- Ranking uses the deterministic weighted score, descending, with lower candidate booking ID as tie-break.
+- Ranking uses the final score, descending, then senior-priority pairs, then lower candidate booking ID.
+- Eligible pairs may receive a capped senior-priority adjustment (default `+3.0`) after eligibility passes.
 - ML confidence is included for information and does not alter eligibility or rank.
 
 Response `200`:
@@ -549,14 +591,21 @@ Response `200`:
     "limit": 20,
     "requester_booking_id": 2,
     "requester_has_active_exchange": false,
-    "score_method": "deterministic_weighted_baseline",
-    "ranking_tie_break": "lower candidate_booking_id",
+    "score_method": "deterministic_weighted_baseline_plus_policy",
+    "ranking_tie_break": "higher final score, then senior-priority pairs, then lower candidate_booking_id",
     "weights": {
       "reciprocal_match": 0.5,
       "preference_compatibility": 0.2,
       "coach_compatibility": 0.15,
       "berth_proximity": 0.15
     },
+    "priority_policy": {
+      "enabled": true,
+      "threshold_age": 60,
+      "bonus_points": 3.0,
+      "eligibility_override": false
+    },
+    "priority_matches": 1,
     "limitations": [],
     "ml": {},
     "generated_at": "2026-10-28T17:30:00Z"
@@ -568,7 +617,7 @@ The sample values reflect a verified synthetic smoke run for Rohan's booking. Ac
 
 If the booking is already in an active exchange, the requester remains excluded and `meta.requester_has_active_exchange` is `true`.
 
-Errors: `400 PREFERENCE_REQUIRED`, `400 VALIDATION_ERROR`, `404 BOOKING_NOT_FOUND`, `403 FORBIDDEN`.
+Errors: `400 PREFERENCE_REQUIRED`, `400 VALIDATION_ERROR`, `404 BOOKING_NOT_FOUND`, `403 FORBIDDEN`, `429 MATCHING_RATE_LIMITED`.
 
 ### `GET /api/matching/{candidate_booking_id}/explanation`
 
@@ -592,7 +641,9 @@ Errors: `400 PREFERENCE_REQUIRED`, `400 SELF_EXCHANGE_NOT_ALLOWED`, `404 CANDIDA
 | `CANCELLED` | No | Participant cancelled |
 | `AWAITING_EXTERNAL_AUTHORIZATION` | Yes | Administrator started simulated authorization |
 | `COMPLETED` | No | Administrator completed simulation |
-| `EXPIRED` | No | Administrator expired the request |
+| `EXPIRED` | No | Pending request passed its TTL, or an administrator expired it |
+
+Pending requests receive an `expires_at` timestamp (`PENDING_REQUEST_TTL_HOURS`, default 72). Stale requests are marked `EXPIRED` lazily when exchange, matching, or dashboard data is read. Accepting a request clears `expires_at`.
 
 ### `GET /api/exchanges`
 
@@ -603,7 +654,7 @@ Query parameters:
 | `status` | Any exchange status |
 | `direction` | `INCOMING` or `OUTGOING` |
 
-Returns exchanges where the current user owns either booking. Newest updated first.
+Returns exchanges where the current user owns either booking. Senior-priority requests are listed first, then newest updated first. The response includes `priority_count` and a policy notice.
 
 ### `POST /api/exchanges`
 
@@ -616,7 +667,7 @@ Request:
 }
 ```
 
-The API re-checks ownership and full reciprocal eligibility. Request creation is rejected for self-exchange, missing preferences, ineligible pairs, and any booking already in an active exchange.
+The API re-checks ownership and full reciprocal eligibility. Request creation is rejected for self-exchange, missing preferences, ineligible pairs, and any booking already in an active exchange. The response includes `priority_tier` and `expires_at`.
 
 Response `201`: `{ "exchange": {} }`.
 
@@ -627,9 +678,11 @@ Errors:
 | 400 | `SELF_EXCHANGE_NOT_ALLOWED` |
 | 400 | `PREFERENCE_REQUIRED` |
 | 403 | `FORBIDDEN` |
+| 403 | `ACCOUNT_RESTRICTED` |
 | 404 | `BOOKING_NOT_FOUND` / `CANDIDATE_NOT_FOUND` |
-| 409 | `ACTIVE_EXCHANGE_CONFLICT` |
+| 409 | `ACTIVE_EXCHANGE_CONFLICT` / `ACTIVE_REQUEST_LIMIT` |
 | 422 | `CANDIDATE_NOT_ELIGIBLE` |
+| 429 | `EXCHANGE_RATE_LIMITED` / `EXCHANGE_DAILY_LIMIT` / `REQUEST_COOLDOWN` |
 
 An accepted or completed exchange is still not an official railway change. `official_change` remains `false`.
 
@@ -662,7 +715,7 @@ Downloads `railswap-exchange-summary.json` with:
 - `exported_at`;
 - `data_mode`;
 - a non-sensitive notice;
-- exchange ID, status, score, viewer role, journey date, train number/name, route, timestamps.
+- exchange ID, status, score, priority tier, expiry timestamp, viewer role, journey date, train number/name, route, timestamps.
 
 It does not include passenger names, emails, booking references, or ticket data.
 
@@ -774,9 +827,17 @@ Returns aggregate counts:
     "bookings": 8,
     "exchange_requests": 3,
     "notifications": 2,
-    "active_exchanges": 2
+    "active_exchanges": 2,
+    "senior_priority_requests": 2
   },
   "exchange_status_counts": {},
+  "security": {
+    "failed_logins_24h": 1,
+    "successful_logins_24h": 3,
+    "open_fraud_alerts": 1,
+    "restricted_users": 0,
+    "rate_limit_store": "in_memory_single_process"
+  },
   "ml": {},
   "data_mode": "SYNTHETIC_DEMONSTRATION_DATA",
   "privacy_note": "Administrators see aggregate and exchange-state information only...",
@@ -795,7 +856,7 @@ Query parameters:
 | `status` | Optional status filter |
 | `limit` | 1-100, default 50 |
 
-Each item contains exchange ID, status, score, timestamps, journey date, train number, route, `passenger_data: "REDACTED"`, and `official_change: false`. Passenger names, emails, booking references, and ticket data are excluded.
+Each item contains exchange ID, status, score, priority tier, expiry timestamp, timestamps, journey date, train number, route, `passenger_data: "REDACTED"`, and `official_change: false`. Passenger names, emails, booking references, and ticket data are excluded.
 
 ### `POST /api/admin/exchanges/{exchange_id}/advance`
 
@@ -823,6 +884,48 @@ Response includes the redacted exchange summary and:
 
 Errors: `404 EXCHANGE_NOT_FOUND`, `409 INVALID_STATE_TRANSITION`, `409 CONCURRENT_UPDATE`.
 
+### `GET /api/admin/fraud-alerts`
+
+Query parameters:
+
+| Name | Description |
+|---|---|
+| `status` | Optional `OPEN`, `RESOLVED`, or `DISMISSED` |
+| `severity` | Optional `LOW`, `MEDIUM`, or `HIGH` |
+| `limit` | 1-100, default 50 |
+
+Each alert includes `alert_type`, `severity`, `status`, `summary`, structured `details`, timestamps, and a redacted account reference such as `Demo user #6`. Passenger display names, emails, IP addresses, and ticket data are not exposed.
+
+### `POST /api/admin/fraud-alerts/{alert_id}/resolve`
+
+Request:
+
+```json
+{
+  "resolution": "RESOLVED",
+  "restrict_user": false,
+  "note": "Reviewed synthetic demo activity."
+}
+```
+
+- `resolution` must be `RESOLVED` or `DISMISSED`.
+- `restrict_user` optionally sets the associated non-admin account to `RESTRICTED`.
+- `note` is optional (maximum 300 characters).
+
+Errors: `404 ALERT_NOT_FOUND`, `409 ALERT_ALREADY_REVIEWED`, `400 VALIDATION_ERROR`.
+
+### `POST /api/admin/users/{user_id}/status`
+
+Request:
+
+```json
+{ "status": "RESTRICTED" }
+```
+
+Allowed values are `ACTIVE` and `RESTRICTED`. Administrator accounts cannot be restricted through this endpoint. Restricting an account blocks sign-in and immediately invalidates existing JWTs.
+
+Errors: `404 USER_NOT_FOUND`, `400 VALIDATION_ERROR`.
+
 ---
 
 ## 16. Data and privacy notes
@@ -830,8 +933,12 @@ Errors: `404 EXCHANGE_NOT_FOUND`, `409 INVALID_STATE_TRANSITION`, `409 CONCURREN
 - Candidate APIs return public identity only. A user who disables display-name sharing appears as `Demo passenger`.
 - Booking ownership, preference ownership, notification ownership, and exchange participation are checked server-side.
 - Administrators cannot use private booking endpoints to bypass ownership.
-- Admin exchange responses are deliberately redacted.
+- Admin exchange responses and fraud alerts are deliberately redacted; fraud alerts identify accounts only as `Demo user #id`.
 - Export excludes identity, references, and ticket data.
 - JWT access tokens are stored in browser `localStorage` in this prototype. This is suitable only for local demonstration; a production design should address HttpOnly cookies, CSRF, revocation, and rotation.
-- No rate limiting is included in this academic prototype.
+- Sign-in attempts, exchange-request velocity, registration, matching, and exchange actions are rate-limited. The limiter is in-memory and single-process for this demonstration.
+- Repeated failed sign-ins trigger a temporary lockout and an administrator alert. A successful sign-in resets the failed-attempt counter.
+- Administrators can restrict accounts; restriction blocks sign-in and invalidates existing JWTs.
+- Senior-citizen priority is self-declared, capped, applied only after eligibility, and never an ML feature.
+- Pending requests expire lazily after the configured TTL.
 - The application does not contact any railway system and does not claim railway approval.

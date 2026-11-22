@@ -1,6 +1,7 @@
 import {
   ArrowRight,
   BrainCircuit,
+  CalendarDays,
   LockKeyhole,
   Mail,
   ShieldCheck,
@@ -22,6 +23,8 @@ export default function Register() {
     email: "",
     password: "",
     confirm_password: "",
+    date_of_birth: "",
+    senior_priority_opt_in: false,
   });
   const [errors, setErrors] = useState({});
   const [error, setError] = useState("");
@@ -39,6 +42,8 @@ export default function Register() {
         display_name: values.display_name.trim(),
         email: values.email.trim(),
         password: values.password,
+        date_of_birth: values.date_of_birth || null,
+        senior_priority_opt_in: values.senior_priority_opt_in,
       });
       navigate("/dashboard", { replace: true });
     } catch (err) {
@@ -155,6 +160,48 @@ export default function Register() {
               </div>
               {errors.email && <p className="field-error">{errors.email}</p>}
             </div>
+
+            <div className="field">
+              <label htmlFor="date_of_birth">
+                Date of birth (optional)
+              </label>
+              <div className="input-with-icon">
+                <CalendarDays size={17} aria-hidden="true" />
+                <input
+                  id="date_of_birth"
+                  type="date"
+                  autoComplete="bday"
+                  max={new Date().toISOString().slice(0, 10)}
+                  value={values.date_of_birth}
+                  onChange={(event) => update("date_of_birth", event.target.value)}
+                />
+              </div>
+              <p className="field-hint">
+                Only used for the optional senior-citizen priority demonstration.
+                No government ID is requested.
+              </p>
+            </div>
+
+            <label className="toggle-row">
+              <span className="toggle-copy">
+                <ShieldCheck size={19} aria-hidden="true" />
+                <span>
+                  <strong>Enable senior priority if I am 60 or older</strong>
+                  <small>
+                    Self-declared demo policy only. It adds a small ranking
+                    adjustment after eligibility passes and is not official
+                    railway priority.
+                  </small>
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                checked={values.senior_priority_opt_in}
+                onChange={(event) =>
+                  update("senior_priority_opt_in", event.target.checked)
+                }
+              />
+            </label>
 
             <div className="form-grid two-column">
               <div className="field">

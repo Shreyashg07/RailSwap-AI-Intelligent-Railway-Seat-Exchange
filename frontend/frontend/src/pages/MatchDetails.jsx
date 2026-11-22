@@ -132,6 +132,27 @@ export default function MatchDetails() {
         </div>
       </header>
 
+      {match.priority?.applied && (
+        <div className="inline-notice inline-notice-info priority-banner">
+          <Sparkles size={17} aria-hidden="true" />
+          <div>
+            <strong>Senior-citizen priority policy applied</strong>
+            <p>
+              One passenger in this pair has an active self-declared senior
+              priority. A small +{formatScore(match.priority.bonus_points)} ranking
+              adjustment was added after all eligibility checks passed. It is not
+              official railway priority.
+            </p>
+          </div>
+        </div>
+      )}
+      {match.priority?.candidate_status === "PRIVATE" && (
+        <div className="inline-notice inline-notice-info compact-notice">
+          <ShieldCheck size={16} aria-hidden="true" />
+          The candidate keeps priority status private. No label or private
+          profile detail is shown.
+        </div>
+      )}
       {!eligible && (
         <div className="inline-notice inline-notice-danger" role="alert">
           <AlertTriangle size={17} aria-hidden="true" />
@@ -207,6 +228,15 @@ export default function MatchDetails() {
                 {match.ml?.available
                   ? `Synthetic confidence ${formatProbability(match.ml.score)}`
                   : "Rule-based fallback"}
+              </strong>
+            </div>
+            <div>
+              <Sparkles size={15} aria-hidden="true" />
+              <span>Priority policy</span>
+              <strong>
+                {match.priority?.applied
+                  ? `Applied · +${formatScore(match.priority.bonus_points)}`
+                  : "No adjustment"}
               </strong>
             </div>
           </div>
